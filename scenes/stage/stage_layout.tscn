@@ -1,0 +1,39 @@
+[gd_scene load_steps=5 format=3 uid="uid://stage_layout"]
+
+[ext_resource type="Script" path="res://scripts/stage/grid_system.gd" id="1_grid"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
+size = Vector3(10, 0.2, 8)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
+albedo_color = Color(0.2, 0.15, 0.1, 1)
+
+[sub_resource type="BoxMesh" id="BoxMesh_floor"]
+size = Vector3(10, 0.2, 8)
+
+[node name="StageLayout" type="Node3D"]
+
+[node name="Floor" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.1, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Floor"]
+shape = SubResource("BoxShape3D_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
+material_override = SubResource("StandardMaterial3D_floor")
+mesh = SubResource("BoxMesh_floor")
+
+[node name="GridOverlay" type="Node3D" parent="."]
+script = ExtResource("1_grid")
+grid_size = Vector2i(10, 8)
+cell_size = 1.0
+
+[node name="WingLeft" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6, 0, 0)
+
+[node name="WingRight" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0, 0)
+
+[node name="Stagehands" type="Node3D" parent="."]
+
+[node name="Props" type="Node3D" parent="."]

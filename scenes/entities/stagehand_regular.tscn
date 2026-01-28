@@ -1,0 +1,14 @@
+[gd_scene load_steps=3 format=3 uid="uid://stagehand_regular"]
+
+[ext_resource type="Script" path="res://scripts/entities/stagehand_regular.gd" id="1_script"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_body"]
+radius = 15.0
+
+[node name="StagehandRegular" type="CharacterBody2D"]
+collision_layer = 2
+collision_mask = 1
+script = ExtResource("1_script")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_body")
