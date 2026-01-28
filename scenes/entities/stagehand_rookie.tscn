@@ -12,3 +12,10 @@ script = ExtResource("1_script")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 shape = SubResource("CircleShape2D_body")
+
+[node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
+radius = 15.0
+neighbor_distance = 100.0
+max_neighbors = 10
+max_speed = 180.0
+avoidance_enabled = true

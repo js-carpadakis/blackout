@@ -12,3 +12,7 @@ script = ExtResource("1_script")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 shape = SubResource("RectangleShape2D_body")
+
+[node name="NavigationObstacle2D" type="NavigationObstacle2D" parent="."]
+radius = 30.0
+avoidance_enabled = true

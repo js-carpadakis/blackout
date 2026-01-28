@@ -123,7 +123,12 @@ func move_to(target_world_pos: Vector2) -> void:
 		return
 
 	current_path = _pathfinding.find_path(global_position, target_world_pos)
-	path_index = 0
+
+	# Skip first waypoint (starting cell) since we're already there
+	if current_path.size() > 1:
+		path_index = 1
+	else:
+		path_index = 0
 
 	if current_path.size() > 0:
 		if current_state == State.CARRYING:

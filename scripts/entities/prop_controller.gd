@@ -22,6 +22,8 @@ var _position_tolerance: float = 20.0
 var _rotation_tolerance: float = 10.0  # Degrees
 var _show_ghost: bool = false
 
+@onready var _nav_obstacle: NavigationObstacle2D = $NavigationObstacle2D
+
 
 func _ready() -> void:
 	# Set prop size based on weight
@@ -34,6 +36,11 @@ func _ready() -> void:
 			prop_size = Vector2(70, 70)
 		_:
 			prop_size = Vector2(30 + weight * 15, 30 + weight * 15)
+
+	# Update navigation obstacle radius to match prop size
+	if _nav_obstacle:
+		_nav_obstacle.radius = max(prop_size.x, prop_size.y) / 2.0 + 5.0
+
 	queue_redraw()
 
 
@@ -90,12 +97,18 @@ func check_target_reached() -> void:
 func on_picked_up(stagehand: CharacterBody2D) -> void:
 	carrier = stagehand
 	current_state = PropState.BEING_CARRIED
+	# Disable obstacle avoidance while being carried
+	if _nav_obstacle:
+		_nav_obstacle.avoidance_enabled = false
 	picked_up.emit(stagehand)
 
 
 func on_put_down(at_pos: Vector2) -> void:
 	carrier = null
 	current_state = PropState.PLACED
+	# Re-enable obstacle avoidance when put down
+	if _nav_obstacle:
+		_nav_obstacle.avoidance_enabled = true
 	put_down.emit(at_pos)
 	check_target_reached()
 
