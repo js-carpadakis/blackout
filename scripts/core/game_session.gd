@@ -19,23 +19,35 @@ var props: Array[StaticBody2D] = []
 
 # Cell size in pixels (must match grid_system and pathfinding)
 var _cell_size: float = 50.0
+var _grid_size: Vector2i = Vector2i(32, 20)
 
-# Wing section height (total wing height 500 / 3 sections)
-const WING_SECTION_HEIGHT := 166.667
+# Half-ellipse stage shape: flat edge at bottom (backstage), curve at top (audience)
+# Center of full ellipse at (0, 500), semi-axis x=800, semi-axis y=1000
+# Grid covers [-800, 800] x [-500, 500]
+const ELLIPSE_CENTER_Y := 500.0
+const ELLIPSE_A := 800.0   # semi-axis x (half of 1600)
+const ELLIPSE_B := 1000.0  # semi-axis y (full 1000 depth)
 
-# Stage left wing sections (1st=closest to audience, 3rd=deepest backstage)
-const STAGE_LEFT_1ST := Rect2(-500, -100, 150, 166.667)
-const STAGE_LEFT_2ND := Rect2(-500, 66.667, 150, 166.667)
-const STAGE_LEFT_3RD := Rect2(-500, 233.333, 150, 166.667)
+# Wing sections: 150px wide, 600px tall (3 sections of 200px), outside the ellipse
+const WING_WIDTH := 150.0
+const WING_SECTION_HEIGHT := 200.0
+
+# Stage left wing sections (1st=closest to audience/top, 3rd=deepest backstage/bottom)
+const STAGE_LEFT_1ST := Rect2(-950, -100, 150, 200)
+const STAGE_LEFT_2ND := Rect2(-950, 100, 150, 200)
+const STAGE_LEFT_3RD := Rect2(-950, 300, 150, 200)
 
 # Stage right wing sections
-const STAGE_RIGHT_1ST := Rect2(350, -100, 150, 166.667)
-const STAGE_RIGHT_2ND := Rect2(350, 66.667, 150, 166.667)
-const STAGE_RIGHT_3RD := Rect2(350, 233.333, 150, 166.667)
+const STAGE_RIGHT_1ST := Rect2(800, -100, 150, 200)
+const STAGE_RIGHT_2ND := Rect2(800, 100, 150, 200)
+const STAGE_RIGHT_3RD := Rect2(800, 300, 150, 200)
 
 # Full wing bounds (union of all 3 sections per side)
-const STAGE_LEFT_RECT := Rect2(-500, -100, 150, 500)
-const STAGE_RIGHT_RECT := Rect2(350, -100, 150, 500)
+const STAGE_LEFT_RECT := Rect2(-950, -100, 150, 600)
+const STAGE_RIGHT_RECT := Rect2(800, -100, 150, 600)
+
+# Backstage: 2000x600 rectangle overlapping wings and bottom of stage
+const BACKSTAGE_RECT := Rect2(-1000, -100, 2000, 600)
 
 # Track stagehands that should pick up a prop when they arrive
 var _pending_pick_up: Dictionary = {}  # stagehand -> prop
@@ -44,11 +56,15 @@ var _pending_put_down: Dictionary = {}  # stagehand -> true
 
 
 func _ready() -> void:
-	# Initialize pathfinding
-	pathfinding.initialize(Vector2i(20, 16), _cell_size)
+	# Initialize pathfinding with larger grid for half-ellipse stage
+	pathfinding.initialize(_grid_size, _cell_size)
+	_mark_stage_bounds()
+
+	# Configure grid overlay with ellipse shape
+	grid_overlay.set_stage_ellipse(ELLIPSE_CENTER_Y, ELLIPSE_A, ELLIPSE_B)
 
 	# Focus camera on stage center
-	camera.focus_on(Vector2.ZERO)
+	camera.focus_on(Vector2(0, 0))
 
 	# Spawn initial stagehands for testing
 	_spawn_test_entities()
@@ -82,15 +98,11 @@ func _spawn_test_entities() -> void:
 		STAGE_RIGHT_1ST, STAGE_RIGHT_2ND, STAGE_RIGHT_3RD,
 	]
 
-	# Stage area for random targets (between wings, below house)
-	var stage_min := Vector2(-340, -90)
-	var stage_max := Vector2(340, 390)
-
 	for i in range(prop_defs.size()):
 		var def: Array = prop_defs[i]
 		var section: Rect2 = wing_sections[i]
 		var spawn_pos: Vector2 = _random_point_in_rect(section)
-		var target_pos: Vector2 = _random_stage_target(stage_min, stage_max)
+		var target_pos: Vector2 = _random_stage_target_ellipse()
 		_spawn_prop(spawn_pos, target_pos, def[1], def[0], def[2])
 
 
@@ -223,11 +235,43 @@ func _random_point_in_rect(rect: Rect2) -> Vector2:
 	)
 
 
-func _random_stage_target(stage_min: Vector2, stage_max: Vector2) -> Vector2:
-	return Vector2(
-		randf_range(stage_min.x, stage_max.x),
-		randf_range(stage_min.y, stage_max.y)
-	)
+func _random_stage_target_ellipse() -> Vector2:
+	# Rejection sampling: pick random points in bounding box until one is inside the ellipse
+	# Shrink slightly to keep targets away from the edge
+	var margin := 50.0
+	for attempt in range(100):
+		var x: float = randf_range(-ELLIPSE_A + margin, ELLIPSE_A - margin)
+		var y: float = randf_range(ELLIPSE_CENTER_Y - ELLIPSE_B + margin, ELLIPSE_CENTER_Y - margin)
+		if is_on_stage(Vector2(x, y)):
+			return Vector2(x, y)
+	# Fallback: center of stage
+	return Vector2(0, 0)
+
+
+static func is_on_stage(world_pos: Vector2) -> bool:
+	# Flat edge at bottom (ELLIPSE_CENTER_Y), curve extends upward
+	if world_pos.y > ELLIPSE_CENTER_Y:
+		return false
+	var nx: float = world_pos.x / ELLIPSE_A
+	var ny: float = (world_pos.y - ELLIPSE_CENTER_Y) / ELLIPSE_B
+	return (nx * nx + ny * ny) <= 1.0
+
+
+static func is_in_backstage(world_pos: Vector2) -> bool:
+	return BACKSTAGE_RECT.has_point(world_pos)
+
+
+static func is_walkable(world_pos: Vector2) -> bool:
+	return is_on_stage(world_pos) or is_in_backstage(world_pos)
+
+
+func _mark_stage_bounds() -> void:
+	# Block all pathfinding cells that fall outside the walkable area (stage + backstage)
+	for x in range(_grid_size.x):
+		for y in range(_grid_size.y):
+			var world_pos: Vector2 = pathfinding.cell_to_world(Vector2i(x, y))
+			if not is_walkable(world_pos):
+				pathfinding.set_cell_blocked(Vector2i(x, y), true)
 
 
 func _section_center(rect: Rect2) -> Vector2:

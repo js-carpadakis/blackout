@@ -7,7 +7,7 @@ enum ViewSide { STAGE_LEFT, STAGE_RIGHT }
 
 @export var pan_speed: float = 300.0
 @export var zoom_speed: float = 0.5
-@export var min_zoom: float = 0.5
+@export var min_zoom: float = 0.3
 @export var max_zoom: float = 2.0
 @export var transition_duration: float = 0.5
 
@@ -17,7 +17,7 @@ var _is_transitioning: bool = false
 
 func _ready() -> void:
 	make_current()
-	zoom = Vector2(0.75, 0.75)
+	zoom = Vector2(0.5, 0.5)
 
 
 func _process(delta: float) -> void:

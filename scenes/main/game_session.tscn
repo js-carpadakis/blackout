@@ -7,29 +7,21 @@
 [ext_resource type="Script" path="res://scripts/stage/stage_zones.gd" id="5_zones"]
 
 [sub_resource type="NavigationPolygon" id="NavigationPolygon_stage"]
-vertices = PackedVector2Array(-500, -400, 500, -400, 500, 400, -500, 400)
+vertices = PackedVector2Array(-950, -600, 950, -600, 950, 500, -950, 500)
 polygons = [PackedInt32Array(0, 1, 2, 3)]
-outlines = [PackedVector2Array(-500, -400, 500, -400, 500, 400, -500, 400)]
+outlines = [PackedVector2Array(-950, -600, 950, -600, 950, 500, -950, 500)]
 
 [node name="GameSession" type="Node2D"]
 script = ExtResource("1_session")
 
 [node name="StageLayout" type="Node2D" parent="."]
 
-[node name="Floor" type="ColorRect" parent="StageLayout"]
-offset_left = -500.0
-offset_top = -400.0
-offset_right = 500.0
-offset_bottom = 400.0
-mouse_filter = 2
-color = Color(0.2, 0.15, 0.1, 1)
-
 [node name="StageZones" type="Node2D" parent="StageLayout"]
 script = ExtResource("5_zones")
 
 [node name="GridOverlay" type="Node2D" parent="StageLayout"]
 script = ExtResource("4_grid")
-grid_size = Vector2i(20, 16)
+grid_size = Vector2i(32, 20)
 cell_size = 50.0
 
 [node name="Stagehands" type="Node2D" parent="StageLayout"]
