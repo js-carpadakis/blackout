@@ -17,7 +17,7 @@ var _is_transitioning: bool = false
 
 func _ready() -> void:
 	make_current()
-	zoom = Vector2(1.0, 1.0)
+	zoom = Vector2(0.75, 0.75)
 
 
 func _process(delta: float) -> void:

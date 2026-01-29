@@ -65,15 +65,33 @@ func _spawn_test_entities() -> void:
 	_spawn_stagehand(StagehandRegularScene, _section_center(STAGE_RIGHT_2ND), Color.CORAL)
 	_spawn_stagehand(StagehandStrongScene, _section_center(STAGE_RIGHT_3RD), Color.DARK_RED)
 
-	# Stage left props - one per wing section
-	_spawn_prop(_section_center(STAGE_LEFT_1ST) + Vector2(0, 30), Vector2(-50, -200), Color.SADDLE_BROWN, "Chair", 1)
-	_spawn_prop(_section_center(STAGE_LEFT_2ND) + Vector2(0, 30), Vector2(-150, 0), Color.ANTIQUE_WHITE, "Dresser", 2)
-	_spawn_prop(_section_center(STAGE_LEFT_3RD) + Vector2(0, 30), Vector2(-250, 200), Color.DARK_RED, "Piano", 3)
+	# Prop definitions: [name, color, weight]
+	var prop_defs: Array = [
+		["Chair", Color.SADDLE_BROWN, 1],
+		["Stool", Color.NAVY_BLUE, 1],
+		["Dresser", Color.ANTIQUE_WHITE, 2],
+		["Couch", Color.FOREST_GREEN, 2],
+		["Piano", Color.DARK_RED, 3],
+		["Bookshelf", Color.PURPLE, 3],
+	]
+	prop_defs.shuffle()
 
-	# Stage right props - one per wing section
-	_spawn_prop(_section_center(STAGE_RIGHT_1ST) + Vector2(0, 30), Vector2(50, -200), Color.NAVY_BLUE, "Stool", 1)
-	_spawn_prop(_section_center(STAGE_RIGHT_2ND) + Vector2(0, 30), Vector2(150, 0), Color.FOREST_GREEN, "Couch", 2)
-	_spawn_prop(_section_center(STAGE_RIGHT_3RD) + Vector2(0, 30), Vector2(250, 200), Color.PURPLE, "Bookshelf", 3)
+	# All wing sections to distribute props into
+	var wing_sections: Array[Rect2] = [
+		STAGE_LEFT_1ST, STAGE_LEFT_2ND, STAGE_LEFT_3RD,
+		STAGE_RIGHT_1ST, STAGE_RIGHT_2ND, STAGE_RIGHT_3RD,
+	]
+
+	# Stage area for random targets (between wings, below house)
+	var stage_min := Vector2(-340, -90)
+	var stage_max := Vector2(340, 390)
+
+	for i in range(prop_defs.size()):
+		var def: Array = prop_defs[i]
+		var section: Rect2 = wing_sections[i]
+		var spawn_pos: Vector2 = _random_point_in_rect(section)
+		var target_pos: Vector2 = _random_stage_target(stage_min, stage_max)
+		_spawn_prop(spawn_pos, target_pos, def[1], def[0], def[2])
 
 
 func _spawn_stagehand(scene: PackedScene, pos: Vector2, color: Color) -> void:
@@ -196,6 +214,20 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 				prop.on_put_down(prop.global_position)
 			# Move to nearest wing after putting down
 			_return_to_nearest_wing(stagehand)
+
+
+func _random_point_in_rect(rect: Rect2) -> Vector2:
+	return Vector2(
+		randf_range(rect.position.x + 20, rect.position.x + rect.size.x - 20),
+		randf_range(rect.position.y + 20, rect.position.y + rect.size.y - 20)
+	)
+
+
+func _random_stage_target(stage_min: Vector2, stage_max: Vector2) -> Vector2:
+	return Vector2(
+		randf_range(stage_min.x, stage_max.x),
+		randf_range(stage_min.y, stage_max.y)
+	)
 
 
 func _section_center(rect: Rect2) -> Vector2:
