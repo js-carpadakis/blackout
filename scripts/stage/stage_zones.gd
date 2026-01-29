@@ -7,6 +7,7 @@ extends Node2D
 @export var house_height: float = 100.0
 
 @export var wing_color: Color = Color(0.15, 0.12, 0.08, 0.8)
+@export var wing_divider_color: Color = Color(0.4, 0.35, 0.3, 0.3)
 @export var house_color: Color = Color(0.1, 0.08, 0.06, 0.9)
 @export var audience_head_color: Color = Color(0.3, 0.25, 0.2, 0.7)
 @export var zone_border_color: Color = Color(0.4, 0.35, 0.3, 0.5)
@@ -20,22 +21,27 @@ func _draw() -> void:
 	var half_width: float = stage_width / 2.0
 	var half_height: float = stage_height / 2.0
 
-	# Draw left wing (below the house)
-	var left_wing_rect := Rect2(
-		Vector2(-half_width, -half_height + (house_height * 3)),
-		Vector2(wing_width, stage_height - (house_height * 3))
-	)
-	draw_rect(left_wing_rect, wing_color)
-	draw_rect(left_wing_rect, zone_border_color, false, 2.0)
+	# Wing dimensions
+	var wing_top: float = -half_height + (house_height * 3)
+	var wing_height: float = stage_height - (house_height * 3)
+	var section_height: float = wing_height / 3.0
+
+	# Draw stage left wings (1st, 2nd, 3rd from audience)
+	var sl_x: float = -half_width
+	for i in range(3):
+		var section_y: float = wing_top + i * section_height
+		var section_rect := Rect2(Vector2(sl_x, section_y), Vector2(wing_width, section_height))
+		draw_rect(section_rect, wing_color)
+		draw_rect(section_rect, zone_border_color, false, 2.0)
 	_draw_zone_label("STAGE LEFT", Vector2(-half_width + wing_width / 2.0, 0), true)
 
-	# Draw right wing (below the house)
-	var right_wing_rect := Rect2(
-		Vector2(half_width - wing_width, -half_height + (house_height * 3)),
-		Vector2(wing_width, stage_height - (house_height * 3))
-	)
-	draw_rect(right_wing_rect, wing_color)
-	draw_rect(right_wing_rect, zone_border_color, false, 2.0)
+	# Draw stage right wings (1st, 2nd, 3rd from audience)
+	var sr_x: float = half_width - wing_width
+	for i in range(3):
+		var section_y: float = wing_top + i * section_height
+		var section_rect := Rect2(Vector2(sr_x, section_y), Vector2(wing_width, section_height))
+		draw_rect(section_rect, wing_color)
+		draw_rect(section_rect, zone_border_color, false, 2.0)
 	_draw_zone_label("STAGE RIGHT", Vector2(half_width - wing_width / 2.0, 0), true)
 
 	# Draw house (audience area at top)

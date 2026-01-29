@@ -20,9 +20,22 @@ var props: Array[StaticBody2D] = []
 # Cell size in pixels (must match grid_system and pathfinding)
 var _cell_size: float = 50.0
 
-# Wing zone bounds (matching stage_zones.gd)
-const LEFT_WING_RECT := Rect2(-500, -100, 150, 500)   # x=-500 to -350, y=-100 to 400
-const RIGHT_WING_RECT := Rect2(350, -100, 150, 500)   # x=350 to 500, y=-100 to 400
+# Wing section height (total wing height 500 / 3 sections)
+const WING_SECTION_HEIGHT := 166.667
+
+# Stage left wing sections (1st=closest to audience, 3rd=deepest backstage)
+const STAGE_LEFT_1ST := Rect2(-500, -100, 150, 166.667)
+const STAGE_LEFT_2ND := Rect2(-500, 66.667, 150, 166.667)
+const STAGE_LEFT_3RD := Rect2(-500, 233.333, 150, 166.667)
+
+# Stage right wing sections
+const STAGE_RIGHT_1ST := Rect2(350, -100, 150, 166.667)
+const STAGE_RIGHT_2ND := Rect2(350, 66.667, 150, 166.667)
+const STAGE_RIGHT_3RD := Rect2(350, 233.333, 150, 166.667)
+
+# Full wing bounds (union of all 3 sections per side)
+const STAGE_LEFT_RECT := Rect2(-500, -100, 150, 500)
+const STAGE_RIGHT_RECT := Rect2(350, -100, 150, 500)
 
 # Track stagehands that should pick up a prop when they arrive
 var _pending_pick_up: Dictionary = {}  # stagehand -> prop
@@ -42,31 +55,25 @@ func _ready() -> void:
 
 
 func _spawn_test_entities() -> void:
-	# Use wing center positions
-	var left_wing_x: float = LEFT_WING_RECT.position.x + LEFT_WING_RECT.size.x / 2.0
-	var right_wing_x: float = RIGHT_WING_RECT.position.x + RIGHT_WING_RECT.size.x / 2.0
-	# Y positions within wing bounds (wings go from y=-100 to y=600)
-	var y_positions: Array[float] = [-50.0, 75.0, 200.0]
+	# Stage left stagehands - one per wing section
+	_spawn_stagehand(StagehandRookieScene, _section_center(STAGE_LEFT_1ST), Color.LIGHT_BLUE)
+	_spawn_stagehand(StagehandRegularScene, _section_center(STAGE_LEFT_2ND), Color.BLUE)
+	_spawn_stagehand(StagehandStrongScene, _section_center(STAGE_LEFT_3RD), Color.DARK_BLUE)
 
-	# Left wing stagehands - one of each type
-	_spawn_stagehand(StagehandRookieScene, Vector2(left_wing_x, y_positions[0]), Color.LIGHT_BLUE)
-	_spawn_stagehand(StagehandRegularScene, Vector2(left_wing_x, y_positions[1]), Color.BLUE)
-	_spawn_stagehand(StagehandStrongScene, Vector2(left_wing_x, y_positions[2]), Color.DARK_BLUE)
+	# Stage right stagehands - one per wing section
+	_spawn_stagehand(StagehandRookieScene, _section_center(STAGE_RIGHT_1ST), Color.LIGHT_CORAL)
+	_spawn_stagehand(StagehandRegularScene, _section_center(STAGE_RIGHT_2ND), Color.CORAL)
+	_spawn_stagehand(StagehandStrongScene, _section_center(STAGE_RIGHT_3RD), Color.DARK_RED)
 
-	# Right wing stagehands - one of each type
-	_spawn_stagehand(StagehandRookieScene, Vector2(right_wing_x, y_positions[0]), Color.LIGHT_CORAL)
-	_spawn_stagehand(StagehandRegularScene, Vector2(right_wing_x, y_positions[1]), Color.CORAL)
-	_spawn_stagehand(StagehandStrongScene, Vector2(right_wing_x, y_positions[2]), Color.DARK_RED)
+	# Stage left props - one per wing section
+	_spawn_prop(_section_center(STAGE_LEFT_1ST) + Vector2(0, 30), Vector2(-50, -200), Color.SADDLE_BROWN, "Chair", 1)
+	_spawn_prop(_section_center(STAGE_LEFT_2ND) + Vector2(0, 30), Vector2(-150, 0), Color.ANTIQUE_WHITE, "Dresser", 2)
+	_spawn_prop(_section_center(STAGE_LEFT_3RD) + Vector2(0, 30), Vector2(-250, 200), Color.DARK_RED, "Piano", 3)
 
-	# Left wing props - varying weights
-	_spawn_prop(Vector2(-425, 0), Vector2(-50, -200), Color.SADDLE_BROWN, "Chair", 1)
-	_spawn_prop(Vector2(-425, 125), Vector2(-150, 0), Color.ANTIQUE_WHITE, "Dresser", 2)
-	_spawn_prop(Vector2(-425, 250), Vector2(-250, 200), Color.DARK_RED, "Piano", 3)
-
-	# Right wing props - varying weights
-	_spawn_prop(Vector2(425, 0), Vector2(50, -200), Color.NAVY_BLUE, "Stool", 1)
-	_spawn_prop(Vector2(425, 125), Vector2(150, 0), Color.FOREST_GREEN, "Couch", 2)
-	_spawn_prop(Vector2(425, 250), Vector2(250, 200), Color.PURPLE, "Bookshelf", 3)
+	# Stage right props - one per wing section
+	_spawn_prop(_section_center(STAGE_RIGHT_1ST) + Vector2(0, 30), Vector2(50, -200), Color.NAVY_BLUE, "Stool", 1)
+	_spawn_prop(_section_center(STAGE_RIGHT_2ND) + Vector2(0, 30), Vector2(150, 0), Color.FOREST_GREEN, "Couch", 2)
+	_spawn_prop(_section_center(STAGE_RIGHT_3RD) + Vector2(0, 30), Vector2(250, 200), Color.PURPLE, "Bookshelf", 3)
 
 
 func _spawn_stagehand(scene: PackedScene, pos: Vector2, color: Color) -> void:
@@ -191,14 +198,18 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 			_return_to_nearest_wing(stagehand)
 
 
+func _section_center(rect: Rect2) -> Vector2:
+	return rect.position + rect.size / 2.0
+
+
 func _get_nearest_wing_position(from_pos: Vector2) -> Vector2:
-	var left_wing_center_x: float = LEFT_WING_RECT.position.x + LEFT_WING_RECT.size.x / 2.0
-	var right_wing_center_x: float = RIGHT_WING_RECT.position.x + RIGHT_WING_RECT.size.x / 2.0
-	var left_dist: float = abs(from_pos.x - left_wing_center_x)
-	var right_dist: float = abs(from_pos.x - right_wing_center_x)
+	var left_center_x: float = STAGE_LEFT_RECT.position.x + STAGE_LEFT_RECT.size.x / 2.0
+	var right_center_x: float = STAGE_RIGHT_RECT.position.x + STAGE_RIGHT_RECT.size.x / 2.0
+	var left_dist: float = abs(from_pos.x - left_center_x)
+	var right_dist: float = abs(from_pos.x - right_center_x)
 
 	# Clamp Y to wing bounds
-	var wing_rect: Rect2 = LEFT_WING_RECT if left_dist < right_dist else RIGHT_WING_RECT
+	var wing_rect: Rect2 = STAGE_LEFT_RECT if left_dist < right_dist else STAGE_RIGHT_RECT
 	var target_x: float = wing_rect.position.x + wing_rect.size.x / 2.0
 	var target_y: float = clamp(from_pos.y, wing_rect.position.y, wing_rect.position.y + wing_rect.size.y)
 
