@@ -1,10 +1,11 @@
-[gd_scene load_steps=7 format=3 uid="uid://game_session"]
+[gd_scene load_steps=8 format=3 uid="uid://game_session"]
 
 [ext_resource type="Script" path="res://scripts/core/game_session.gd" id="1_session"]
 [ext_resource type="Script" path="res://scripts/stage/camera_controller.gd" id="2_camera"]
 [ext_resource type="Script" path="res://scripts/core/pathfinding_manager.gd" id="3_pathfinding"]
 [ext_resource type="Script" path="res://scripts/stage/grid_system.gd" id="4_grid"]
 [ext_resource type="Script" path="res://scripts/stage/stage_zones.gd" id="5_zones"]
+[ext_resource type="PackedScene" uid="uid://planning_hud" path="res://scenes/ui/planning_hud.tscn" id="6_hud"]
 
 [sub_resource type="NavigationPolygon" id="NavigationPolygon_stage"]
 vertices = PackedVector2Array(-950, -600, 950, -600, 950, 500, -950, 500)
@@ -36,3 +37,5 @@ script = ExtResource("3_pathfinding")
 
 [node name="Camera2D" type="Camera2D" parent="."]
 script = ExtResource("2_camera")
+
+[node name="PlanningHUD" parent="." instance=ExtResource("6_hud")]

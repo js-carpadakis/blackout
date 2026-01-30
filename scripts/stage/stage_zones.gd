@@ -103,43 +103,43 @@ func _draw_wings() -> void:
 
 
 func _draw_house() -> void:
-	# Audience area: curved band following the ellipse arc above the stage
-	# Draw a series of audience heads along arcs above the ellipse edge
+	# House wedge shape
+	var y_top: float = -house_height - backstage_top_y
+	var y_bottom: float = backstage_top_y
 
 	var points := PackedVector2Array([
-		Vector2(-house_top_width / 2.0, -house_height - backstage_top_y),
-		Vector2(house_top_width / 2.0, -house_height - backstage_top_y),
-		Vector2(house_bottom_width / 2.0, backstage_top_y),
-		Vector2(-house_bottom_width / 2.0, backstage_top_y),
+		Vector2(-house_top_width / 2.0, y_top),
+		Vector2(house_top_width / 2.0, y_top),
+		Vector2(house_bottom_width / 2.0, y_bottom),
+		Vector2(-house_bottom_width / 2.0, y_bottom),
 	])
 	draw_colored_polygon(points, house_color)
 
+	# Fill with audience heads in rows
+	var row_index: int = 0
+	var y: float = y_bottom - head_spacing
+	while y > y_top + head_radius:
+		# Interpolate width at this y
+		var t: float = (y - y_top) / (y_bottom - y_top)
+		var half_w: float = lerp(house_top_width / 2.0, house_bottom_width / 2.0, t) - head_radius
+		var x_off: float = row_offset if row_index % 2 == 1 else 0.0
 
-
-	# var base_offset: float = 15.0  # distance above the ellipse edge
-
-	# for r in range(4):  # 4 rows of audience
-	# 	var dist: float = base_offset + r * head_spacing * 0.8
-	# 	var arc_a: float = ellipse_a + dist * 0.3  # slightly widen each row
-	# 	var arc_b: float = ellipse_b + dist
-
-	# 	var col: int = 0
-	# 	var angle: float = PI
-	# 	var angle_step: float = head_spacing / arc_a  # approximate spacing
-	# 	var x_offset: float = row_offset if r % 2 == 1 else 0.0
-
-	# 	while angle < TAU:
-	# 		var x: float = arc_a * cos(angle) + x_offset * cos(angle + PI / 2.0)
-	# 		var y: float = ellipse_center_y + arc_b * sin(angle)
-	# 		# Only draw in upper half (audience side)
-	# 		if y < ellipse_center_y - 10:
-	# 			var variation: float = sin(float(r * 7 + col * 13)) * 0.05
-	# 			var head_color := Color(
-	# 				audience_head_color.r + variation,
-	# 				audience_head_color.g + variation,
-	# 				audience_head_color.b + variation,
-	# 				audience_head_color.a
-	# 			)
-	# 			draw_circle(Vector2(x, y), head_radius, head_color)
-	# 		angle += angle_step
-	# 		col += 1
+		var col: int = 0
+		var x: float = -half_w + x_off
+		while x <= half_w:
+			# Skip heads inside the stage ellipse
+			var nx: float = x / ellipse_a
+			var ny: float = (y - ellipse_center_y) / ellipse_b
+			if (nx * nx + ny * ny) > 1.0:
+				var variation: float = sin(float(row_index * 7 + col * 13)) * 0.05
+				var head_color := Color(
+					audience_head_color.r + variation,
+					audience_head_color.g + variation,
+					audience_head_color.b + variation,
+					audience_head_color.a
+				)
+				draw_circle(Vector2(x, y), head_radius, head_color)
+			x += head_spacing
+			col += 1
+		y -= head_spacing
+		row_index += 1

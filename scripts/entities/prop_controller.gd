@@ -17,6 +17,7 @@ var current_state: PropState = PropState.STORED
 var target_position: Vector2 = Vector2.ZERO
 var target_rotation: float = 0.0
 var carrier: CharacterBody2D = null
+var assigned_stagehand: CharacterBody2D = null
 
 var _position_tolerance: float = 20.0
 var _rotation_tolerance: float = 10.0  # Degrees
@@ -44,9 +45,11 @@ func _ready() -> void:
 	queue_redraw()
 
 
+var is_being_dragged: bool = false
+
 func _process(_delta: float) -> void:
-	# Redraw while being carried to keep ghost at fixed world position
-	if current_state == PropState.BEING_CARRIED and _show_ghost:
+	# Redraw while being moved to keep ghost at fixed world position
+	if _show_ghost and (current_state == PropState.BEING_CARRIED or is_being_dragged):
 		queue_redraw()
 
 
@@ -65,6 +68,11 @@ func _draw() -> void:
 
 	# Border
 	draw_rect(rect, prop_color.darkened(0.3), false, 2.0)
+
+	# Assignment indicator: colored ring using assigned stagehand's color
+	if assigned_stagehand:
+		var ring_radius: float = max(prop_size.x, prop_size.y) / 2.0 + 4.0
+		draw_arc(Vector2.ZERO, ring_radius, 0, TAU, 32, assigned_stagehand.stagehand_color, 2.0)
 
 
 func set_target(pos: Vector2, rot: float = 0.0) -> void:

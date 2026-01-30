@@ -21,6 +21,11 @@ var path_index: int = 0
 var carried_prop: Node2D = null
 var is_selected: bool = false
 
+# Planning phase: task assignment
+var assigned_prop: StaticBody2D = null
+var assigned_target: Vector2 = Vector2.ZERO
+var has_assignment: bool = false
+
 var _pathfinding: Node  # Reference to PathfindingManager
 var _target_position: Vector2
 var _facing_angle: float = 0.0  # Radians, 0 = right, PI/2 = down
@@ -49,6 +54,10 @@ func _draw() -> void:
 
 	var points: PackedVector2Array = PackedVector2Array([tip, base_left, base_right])
 	draw_colored_polygon(points, stagehand_color.lightened(0.3))
+
+	# Assignment indicator (dashed ring)
+	if has_assignment:
+		draw_arc(Vector2.ZERO, stagehand_radius + 3.0, 0, TAU, 32, Color.GREEN, 2.0)
 
 	# Selection indicator (ring)
 	if is_selected:
@@ -203,6 +212,20 @@ func put_down(target_parent: Node2D = null) -> Node2D:
 
 	current_state = State.IDLE
 	return prop
+
+
+func assign_task(prop: StaticBody2D, target: Vector2) -> void:
+	assigned_prop = prop
+	assigned_target = target
+	has_assignment = true
+	queue_redraw()
+
+
+func clear_assignment() -> void:
+	assigned_prop = null
+	assigned_target = Vector2.ZERO
+	has_assignment = false
+	queue_redraw()
 
 
 func set_selected(value: bool) -> void:
