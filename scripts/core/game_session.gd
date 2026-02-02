@@ -62,7 +62,6 @@ var _drag_offset: Vector2 = Vector2.ZERO
 # Execution tracking
 var _pending_pick_up: Dictionary = {}  # stagehand -> prop
 var _pending_put_down: Dictionary = {}  # stagehand -> true
-var _pending_delivery_target: Dictionary = {}  # stagehand -> Vector2 (where to deliver after pickup)
 
 
 func _ready() -> void:
@@ -213,9 +212,13 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 		var ghost_pos: Vector2 = world_pos + _drag_offset
 		if is_on_stage(ghost_pos):
 			_dragging_target_prop.set_target(ghost_pos)
-			# Update assigned stagehand's delivery target if any
+			# Update the matching task's target in the assigned stagehand's queue
 			if _dragging_target_prop.assigned_stagehand:
-				_dragging_target_prop.assigned_stagehand.assigned_target = ghost_pos
+				var sh = _dragging_target_prop.assigned_stagehand
+				for task in sh.task_queue:
+					if task.prop == _dragging_target_prop:
+						task.target = ghost_pos
+						break
 		return
 
 	if not _dragging_entity:
@@ -250,12 +253,13 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 			_assign_prop_to_stagehand(selected_stagehand, prop)
 			return
 
-	# Right-click on stage floor — set delivery target for the selected stagehand's assignment
+	# Right-click on stage floor — set delivery target for the last task in queue
 	if selected_stagehand.has_assignment and is_on_stage(world_pos):
-		selected_stagehand.assigned_target = world_pos
+		var last_task: Dictionary = selected_stagehand.task_queue.back()
+		last_task.target = world_pos
 		# Update the prop's ghost target to match
-		if selected_stagehand.assigned_prop:
-			selected_stagehand.assigned_prop.set_target(world_pos)
+		if last_task.prop:
+			last_task.prop.set_target(world_pos)
 		_update_hud()
 		return
 
@@ -270,22 +274,26 @@ func _assign_prop_to_stagehand(stagehand: CharacterBody2D, prop: StaticBody2D) -
 		print(stagehand.stagehand_name, " cannot carry ", prop.prop_name, " (too heavy)")
 		return
 
-	# Clear previous assignment if any
-	if stagehand.has_assignment and stagehand.assigned_prop:
-		stagehand.assigned_prop.assigned_stagehand = null
-		stagehand.assigned_prop.queue_redraw()
+	# If this prop is already in this stagehand's queue, remove it (toggle off)
+	if stagehand.get_task_index_for_prop(prop) >= 0:
+		stagehand.remove_task(prop)
+		prop.assigned_stagehand = null
+		prop.queue_redraw()
+		_update_hud()
+		print("Unassigned ", stagehand.stagehand_name, " -x- ", prop.prop_name)
+		return
 
 	# Clear any other stagehand assigned to this prop
 	for sh in stagehands:
-		if sh.assigned_prop == prop and sh != stagehand:
-			sh.clear_assignment()
+		if sh != stagehand and sh.get_task_index_for_prop(prop) >= 0:
+			sh.remove_task(prop)
 
-	# Assign
+	# Append to queue
 	stagehand.assign_task(prop, prop.target_position)
 	prop.assigned_stagehand = stagehand
 	prop.queue_redraw()
 	_update_hud()
-	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name)
+	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name, " (task #", stagehand.task_queue.size(), ")")
 
 
 # --- EXECUTION PHASE INPUT ---
@@ -318,17 +326,24 @@ func _start_execution() -> void:
 	planning_hud.set_phase("BLACKOUT")
 	_deselect_all()
 
-	# Queue tasks for all assigned stagehands
+	# Kick off first task for all assigned stagehands
 	for stagehand in stagehands:
-		if stagehand.has_assignment and stagehand.assigned_prop:
-			_pending_pick_up[stagehand] = stagehand.assigned_prop
-			_pending_delivery_target[stagehand] = stagehand.assigned_target
-			stagehand.move_to(stagehand.assigned_prop.global_position)
+		if stagehand.has_assignment:
+			_start_next_task(stagehand)
 
 
 # =============================================================================
 # EXECUTION CALLBACKS
 # =============================================================================
+
+func _start_next_task(stagehand: CharacterBody2D) -> void:
+	var task: Dictionary = stagehand.get_current_task()
+	if task.is_empty():
+		_return_to_nearest_wing(stagehand)
+		return
+	_pending_pick_up[stagehand] = task.prop
+	stagehand.move_to(task.prop.global_position)
+
 
 func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 	# Check if this stagehand should pick up a prop
@@ -345,7 +360,9 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 			var prop: Node2D = stagehand.put_down(props_container)
 			if prop:
 				prop.on_put_down(prop.global_position)
-			_return_to_nearest_wing(stagehand)
+			# Advance to next task in queue
+			stagehand.advance_task()
+			_start_next_task(stagehand)
 
 
 func _try_pickup_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
@@ -362,12 +379,11 @@ func _try_pickup_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
 	# Pick up the prop
 	if stagehand.pick_up(prop):
 		prop.on_picked_up(stagehand)
-		# Now move to delivery target
-		if _pending_delivery_target.has(stagehand):
-			var target: Vector2 = _pending_delivery_target[stagehand]
-			_pending_delivery_target.erase(stagehand)
+		# Move to delivery target from current task
+		var task: Dictionary = stagehand.get_current_task()
+		if not task.is_empty():
 			_pending_put_down[stagehand] = true
-			stagehand.move_to(target)
+			stagehand.move_to(task.target)
 
 
 # =============================================================================
@@ -457,7 +473,7 @@ func _get_nearest_wing_position(from_pos: Vector2) -> Vector2:
 	var right_dist: float = abs(from_pos.x - right_center_x)
 
 	var wing_rect: Rect2 = STAGE_LEFT_RECT if left_dist < right_dist else STAGE_RIGHT_RECT
-	var target_x: float = wing_rect.position.x + wing_rect.size.x / 2.0
+	var target_x: float = wing_rect.position.x + wing_rect.size.x / 4.0 if left_dist > right_dist else wing_rect.position.x + 3 * wing_rect.size.x / 4.0
 	var target_y: float = clamp(from_pos.y, wing_rect.position.y, wing_rect.position.y + wing_rect.size.y)
 
 	return Vector2(target_x, target_y)

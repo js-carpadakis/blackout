@@ -21,10 +21,10 @@ var path_index: int = 0
 var carried_prop: Node2D = null
 var is_selected: bool = false
 
-# Planning phase: task assignment
-var assigned_prop: StaticBody2D = null
-var assigned_target: Vector2 = Vector2.ZERO
-var has_assignment: bool = false
+# Planning phase: task queue (each entry is { "prop": StaticBody2D, "target": Vector2 })
+var task_queue: Array = []
+var has_assignment: bool:
+	get: return task_queue.size() > 0
 
 var _pathfinding: Node  # Reference to PathfindingManager
 var _target_position: Vector2
@@ -215,17 +215,46 @@ func put_down(target_parent: Node2D = null) -> Node2D:
 
 
 func assign_task(prop: StaticBody2D, target: Vector2) -> void:
-	assigned_prop = prop
-	assigned_target = target
-	has_assignment = true
+	# Don't add duplicate props to the queue
+	for task in task_queue:
+		if task.prop == prop:
+			return
+	task_queue.append({ "prop": prop, "target": target })
+	queue_redraw()
+
+
+func remove_task(prop: StaticBody2D) -> void:
+	for i in range(task_queue.size() - 1, -1, -1):
+		if task_queue[i].prop == prop:
+			task_queue.remove_at(i)
+			break
 	queue_redraw()
 
 
 func clear_assignment() -> void:
-	assigned_prop = null
-	assigned_target = Vector2.ZERO
-	has_assignment = false
+	task_queue.clear()
 	queue_redraw()
+
+
+func get_current_task() -> Dictionary:
+	if task_queue.is_empty():
+		return {}
+	return task_queue[0]
+
+
+func advance_task() -> Dictionary:
+	if not task_queue.is_empty():
+		task_queue.pop_front()
+	if task_queue.is_empty():
+		return {}
+	return task_queue[0]
+
+
+func get_task_index_for_prop(prop: StaticBody2D) -> int:
+	for i in range(task_queue.size()):
+		if task_queue[i].prop == prop:
+			return i
+	return -1
 
 
 func set_selected(value: bool) -> void:
