@@ -8,7 +8,7 @@ signal reached_target
 enum PropState { STORED, BEING_CARRIED, PLACED, IN_POSITION }
 
 @export var prop_name: String = "Prop"
-@export var weight: int = 1  # Number of stagehands needed
+@export var weight: int = 1  # Combined strength needed to carry
 @export var grid_footprint: Vector2i = Vector2i(1, 1)
 @export var prop_color: Color = Color.SADDLE_BROWN
 @export var prop_size: Vector2 = Vector2(40, 40)
@@ -16,8 +16,8 @@ enum PropState { STORED, BEING_CARRIED, PLACED, IN_POSITION }
 var current_state: PropState = PropState.STORED
 var target_position: Vector2 = Vector2.ZERO
 var target_rotation: float = 0.0
-var carrier: CharacterBody2D = null
-var assigned_stagehand: CharacterBody2D = null
+var carriers: Array[CharacterBody2D] = []  # All stagehands currently carrying this prop
+var assigned_stagehands: Array[CharacterBody2D] = []  # Stagehands with tasks for this prop
 
 var _position_tolerance: float = 20.0
 var _rotation_tolerance: float = 10.0  # Degrees
@@ -69,10 +69,12 @@ func _draw() -> void:
 	# Border
 	draw_rect(rect, prop_color.darkened(0.3), false, 2.0)
 
-	# Assignment indicator: colored ring using assigned stagehand's color
-	if assigned_stagehand:
-		var ring_radius: float = max(prop_size.x, prop_size.y) / 2.0 + 4.0
-		draw_arc(Vector2.ZERO, ring_radius, 0, TAU, 32, assigned_stagehand.stagehand_color, 2.0)
+	# Assignment indicator: colored rings for each assigned stagehand
+	if assigned_stagehands.size() > 0:
+		var base_radius: float = max(prop_size.x, prop_size.y) / 2.0 + 4.0
+		for i in range(assigned_stagehands.size()):
+			var sh: CharacterBody2D = assigned_stagehands[i]
+			draw_arc(Vector2.ZERO, base_radius + i * 3.0, 0, TAU, 32, sh.stagehand_color, 2.0)
 
 
 func set_target(pos: Vector2, rot: float = 0.0) -> void:
@@ -102,8 +104,49 @@ func check_target_reached() -> void:
 		reached_target.emit()
 
 
+# =============================================================================
+# CARRIER MANAGEMENT — cooperative carrying
+# =============================================================================
+
+func get_carrier_strength() -> int:
+	var total: int = 0
+	for sh in carriers:
+		total += sh.strength
+	return total
+
+
+func can_be_lifted() -> bool:
+	return get_carrier_strength() >= weight
+
+
+func get_lead_carrier() -> CharacterBody2D:
+	if carriers.is_empty():
+		return null
+	return carriers[0]
+
+
+func add_carrier(stagehand: CharacterBody2D) -> void:
+	if stagehand not in carriers:
+		carriers.append(stagehand)
+
+
+func remove_carrier(stagehand: CharacterBody2D) -> void:
+	carriers.erase(stagehand)
+
+
+func add_assigned_stagehand(stagehand: CharacterBody2D) -> void:
+	if stagehand not in assigned_stagehands:
+		assigned_stagehands.append(stagehand)
+		queue_redraw()
+
+
+func remove_assigned_stagehand(stagehand: CharacterBody2D) -> void:
+	assigned_stagehands.erase(stagehand)
+	queue_redraw()
+
+
 func on_picked_up(stagehand: CharacterBody2D) -> void:
-	carrier = stagehand
+	add_carrier(stagehand)
 	current_state = PropState.BEING_CARRIED
 	# Disable obstacle avoidance while being carried
 	if _nav_obstacle:
@@ -112,7 +155,7 @@ func on_picked_up(stagehand: CharacterBody2D) -> void:
 
 
 func on_put_down(at_pos: Vector2) -> void:
-	carrier = null
+	carriers.clear()
 	current_state = PropState.PLACED
 	# Re-enable obstacle avoidance when put down
 	if _nav_obstacle:

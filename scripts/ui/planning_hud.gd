@@ -38,12 +38,15 @@ func update_task_list(stagehands: Array[CharacterBody2D]) -> void:
 		entry.add_theme_font_size_override("font_size", 14)
 
 		if stagehand.has_assignment:
-			var prop_names: PackedStringArray = []
+			var task_parts: PackedStringArray = []
 			for i in range(stagehand.task_queue.size()):
 				var task: Dictionary = stagehand.task_queue[i]
 				var prop_name: String = task.prop.prop_name if task.prop else "?"
-				prop_names.append("%d. %s" % [i + 1, prop_name])
-			entry.text = "%s -> %s" % [stagehand.stagehand_name, ", ".join(prop_names)]
+				if task.action == "pick_up":
+					task_parts.append("%d. ^ %s" % [i + 1, prop_name])
+				elif task.action == "drop_off":
+					task_parts.append("%d. v %s" % [i + 1, prop_name])
+			entry.text = "%s: %s" % [stagehand.stagehand_name, ", ".join(task_parts)]
 			entry.add_theme_color_override("font_color", stagehand.stagehand_color)
 		else:
 			entry.text = "%s: unassigned" % stagehand.stagehand_name

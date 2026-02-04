@@ -60,8 +60,10 @@ var _dragging_target_prop: StaticBody2D = null  # When dragging a target ghost
 var _drag_offset: Vector2 = Vector2.ZERO
 
 # Execution tracking
-var _pending_pick_up: Dictionary = {}  # stagehand -> prop
-var _pending_put_down: Dictionary = {}  # stagehand -> true
+var _pending_pick_up: Dictionary = {}  # stagehand -> prop (stagehand moving to pick up)
+var _pending_drop_off: Dictionary = {}  # stagehand -> { prop, target } (stagehand moving to drop off)
+var _waiting_at_prop: Dictionary = {}  # prop -> [stagehands] (waiting for cooperative strength)
+var _cooperative_group: Dictionary = {}  # prop -> { lead: stagehand, helpers: [stagehands] }
 
 
 func _ready() -> void:
@@ -212,13 +214,11 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 		var ghost_pos: Vector2 = world_pos + _drag_offset
 		if is_on_stage(ghost_pos):
 			_dragging_target_prop.set_target(ghost_pos)
-			# Update the matching task's target in the assigned stagehand's queue
-			if _dragging_target_prop.assigned_stagehand:
-				var sh = _dragging_target_prop.assigned_stagehand
+			# Update matching drop_off tasks in all assigned stagehands' queues
+			for sh in _dragging_target_prop.assigned_stagehands:
 				for task in sh.task_queue:
-					if task.prop == _dragging_target_prop:
+					if task.action == "drop_off" and task.prop == _dragging_target_prop:
 						task.target = ghost_pos
-						break
 		return
 
 	if not _dragging_entity:
@@ -245,22 +245,32 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 	if not selected_stagehand:
 		return
 
-	# Check if right-clicked on a prop — assign it to the selected stagehand
+	# Check if right-clicked on a prop — toggle pick_up task
 	for prop in props:
 		var half_size: Vector2 = prop.prop_size / 2.0
 		var prop_rect: Rect2 = Rect2(prop.global_position - half_size, prop.prop_size)
 		if prop_rect.has_point(world_pos):
-			_assign_prop_to_stagehand(selected_stagehand, prop)
+			_toggle_pick_up(selected_stagehand, prop)
 			return
 
-	# Right-click on stage floor — set delivery target for the last task in queue
+	# Right-click on stage floor — add drop_off for pending prop, or update last drop_off target
 	if selected_stagehand.has_assignment and is_on_stage(world_pos):
-		var last_task: Dictionary = selected_stagehand.task_queue.back()
-		last_task.target = world_pos
-		# Update the prop's ghost target to match
-		if last_task.prop:
-			last_task.prop.set_target(world_pos)
-		_update_hud()
+		var pending_prop: StaticBody2D = selected_stagehand.get_pending_drop_off_prop()
+		if pending_prop:
+			# Add a drop_off for the first unmatched pick_up
+			selected_stagehand.assign_drop_off(pending_prop, world_pos)
+			pending_prop.set_target(world_pos)
+			_update_hud()
+			print("Drop-off added: ", selected_stagehand.stagehand_name, " will deliver ", pending_prop.prop_name)
+		else:
+			# All pick_ups have drop_offs — update the most recent drop_off target
+			for i in range(selected_stagehand.task_queue.size() - 1, -1, -1):
+				var task: Dictionary = selected_stagehand.task_queue[i]
+				if task.action == "drop_off":
+					task.target = world_pos
+					task.prop.set_target(world_pos)
+					break
+			_update_hud()
 		return
 
 	# Right-click in backstage — reposition via select-then-click (move directly, no pathfinding)
@@ -268,32 +278,20 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 		selected_stagehand.global_position = world_pos
 
 
-func _assign_prop_to_stagehand(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
-	# Check if stagehand can carry this prop
-	if not stagehand.can_carry(prop):
-		print(stagehand.stagehand_name, " cannot carry ", prop.prop_name, " (too heavy)")
-		return
-
-	# If this prop is already in this stagehand's queue, remove it (toggle off)
-	if stagehand.get_task_index_for_prop(prop) >= 0:
-		stagehand.remove_task(prop)
-		prop.assigned_stagehand = null
-		prop.queue_redraw()
+func _toggle_pick_up(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
+	# If already has a pick_up for this prop, remove all tasks for it (toggle off)
+	if stagehand.has_pick_up_for(prop):
+		stagehand.remove_tasks_for_prop(prop)
+		prop.remove_assigned_stagehand(stagehand)
 		_update_hud()
 		print("Unassigned ", stagehand.stagehand_name, " -x- ", prop.prop_name)
 		return
 
-	# Clear any other stagehand assigned to this prop
-	for sh in stagehands:
-		if sh != stagehand and sh.get_task_index_for_prop(prop) >= 0:
-			sh.remove_task(prop)
-
-	# Append to queue
-	stagehand.assign_task(prop, prop.target_position)
-	prop.assigned_stagehand = stagehand
-	prop.queue_redraw()
+	# Add pick_up task (cooperative — don't clear other stagehands)
+	stagehand.assign_pick_up(prop)
+	prop.add_assigned_stagehand(stagehand)
 	_update_hud()
-	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name, " (task #", stagehand.task_queue.size(), ")")
+	print("Pick-up added: ", stagehand.stagehand_name, " -> ", prop.prop_name, " (task #", stagehand.task_queue.size(), ")")
 
 
 # --- EXECUTION PHASE INPUT ---
@@ -329,61 +327,171 @@ func _start_execution() -> void:
 	# Kick off first task for all assigned stagehands
 	for stagehand in stagehands:
 		if stagehand.has_assignment:
-			_start_next_task(stagehand)
+			_process_next_task(stagehand)
 
 
 # =============================================================================
 # EXECUTION CALLBACKS
 # =============================================================================
 
-func _start_next_task(stagehand: CharacterBody2D) -> void:
+func _process_next_task(stagehand: CharacterBody2D) -> void:
 	var task: Dictionary = stagehand.get_current_task()
 	if task.is_empty():
+		# All tasks done — return to wing
 		_return_to_nearest_wing(stagehand)
 		return
-	_pending_pick_up[stagehand] = task.prop
-	stagehand.move_to(task.prop.global_position)
+
+	if task.action == "pick_up":
+		_pending_pick_up[stagehand] = task.prop
+		stagehand.move_to(task.prop.global_position)
+	elif task.action == "drop_off":
+		_pending_drop_off[stagehand] = { "prop": task.prop, "target": task.target }
+		stagehand.move_to(task.target)
 
 
 func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
-	# Check if this stagehand should pick up a prop
+	# Arrived for a pick_up?
 	if _pending_pick_up.has(stagehand):
-		var prop = _pending_pick_up[stagehand]
+		var prop: StaticBody2D = _pending_pick_up[stagehand]
 		_pending_pick_up.erase(stagehand)
 		_try_pickup_prop(stagehand, prop)
 		return
 
-	# Check if this stagehand should put down their prop
-	if _pending_put_down.has(stagehand):
-		_pending_put_down.erase(stagehand)
-		if stagehand.carried_prop != null:
-			var prop: Node2D = stagehand.put_down(props_container)
-			if prop:
-				prop.on_put_down(prop.global_position)
-			# Advance to next task in queue
-			stagehand.advance_task()
-			_start_next_task(stagehand)
+	# Arrived for a drop_off?
+	if _pending_drop_off.has(stagehand):
+		var info: Dictionary = _pending_drop_off[stagehand]
+		_pending_drop_off.erase(stagehand)
+		_do_drop_off(stagehand, info.prop)
+		return
 
 
 func _try_pickup_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
-	if stagehand.carried_prop != null:
+	# If the prop is already being carried (by another stagehand), skip this pick_up
+	if prop.current_state == prop.PropState.BEING_CARRIED:
+		stagehand.advance_task()
+		_process_next_task(stagehand)
 		return
 
 	# Check if close enough
 	var distance: float = stagehand.global_position.distance_to(prop.global_position)
 	if distance > 75.0:
+		# Retry — move closer
 		_pending_pick_up[stagehand] = prop
 		stagehand.move_to(prop.global_position)
 		return
 
-	# Pick up the prop
-	if stagehand.pick_up(prop):
-		prop.on_picked_up(stagehand)
-		# Move to delivery target from current task
-		var task: Dictionary = stagehand.get_current_task()
-		if not task.is_empty():
-			_pending_put_down[stagehand] = true
-			stagehand.move_to(task.target)
+	# Solo carry: stagehand alone has enough remaining strength
+	if stagehand.get_remaining_strength() >= prop.weight:
+		if stagehand.pick_up(prop):
+			prop.on_picked_up(stagehand)
+			stagehand.advance_task()
+			_process_next_task(stagehand)
+		else:
+			# pick_up failed (already carrying this prop, etc.) — skip task
+			stagehand.advance_task()
+			_process_next_task(stagehand)
+		return
+
+	# Cooperative carry: need to wait for others
+	if not _waiting_at_prop.has(prop):
+		_waiting_at_prop[prop] = []
+	if stagehand not in _waiting_at_prop[prop]:
+		_waiting_at_prop[prop].append(stagehand)
+	stagehand.current_state = StagehandController.State.WAITING
+
+	_check_cooperative_pickup(prop)
+
+
+func _check_cooperative_pickup(prop: StaticBody2D) -> void:
+	if not _waiting_at_prop.has(prop):
+		return
+
+	var waiting: Array = _waiting_at_prop[prop]
+	var total_strength: int = 0
+	for sh in waiting:
+		total_strength += sh.get_remaining_strength()
+
+	if total_strength < prop.weight:
+		return  # Not enough strength yet — keep waiting
+
+	# Enough combined strength! Pick up cooperatively.
+	_waiting_at_prop.erase(prop)
+
+	# First stagehand in the list becomes the lead carrier (prop parented to them)
+	# Use force_pick_up to bypass individual strength check
+	var lead: CharacterBody2D = waiting[0]
+	if lead.force_pick_up(prop):
+		prop.on_picked_up(lead)
+
+	# Track the cooperative group so helpers follow the lead during drop-off
+	var helpers: Array = []
+	for sh in waiting:
+		if sh != lead:
+			helpers.append(sh)
+	_cooperative_group[prop] = { "lead": lead, "helpers": helpers }
+
+	# Calculate the lead's carrying speed so all group members move together
+	var load_ratio: float = float(prop.weight) / float(lead.strength)
+	var group_speed: float = lead.movement_speed * lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
+	lead.speed_override = group_speed
+	for sh in helpers:
+		sh.speed_override = group_speed
+
+	# Advance all stagehands' pick_up tasks
+	for sh in waiting:
+		sh.advance_task()
+		if sh == lead:
+			_process_next_task(sh)
+		else:
+			# Helpers: follow the lead to the drop-off target instead of processing independently
+			prop.add_carrier(sh)
+			var lead_task: Dictionary = lead.get_current_task()
+			if lead_task.has("target"):
+				_pending_drop_off[sh] = { "prop": prop, "target": lead_task.target }
+				sh.move_to(lead_task.target)
+			else:
+				_process_next_task(sh)
+
+
+func _do_drop_off(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
+	# Check if this is the lead of a cooperative group
+	if _cooperative_group.has(prop) and _cooperative_group[prop].lead == stagehand:
+		var group: Dictionary = _cooperative_group[prop]
+		_cooperative_group.erase(prop)
+
+		# Lead drops the prop
+		var dropped: Node2D = stagehand.put_down_prop(prop, props_container)
+		if dropped:
+			dropped.on_put_down(dropped.global_position)
+
+		stagehand.speed_override = 0.0
+		stagehand.advance_task()
+		_process_next_task(stagehand)
+
+		# Complete helpers' drop-off tasks too
+		for helper in group.helpers:
+			prop.remove_carrier(helper)
+			_pending_drop_off.erase(helper)
+			helper.speed_override = 0.0
+			helper.advance_task()
+			_process_next_task(helper)
+		return
+
+	# Helper arriving at drop-off before lead — wait for the lead
+	if _cooperative_group.has(prop) and stagehand in _cooperative_group[prop].helpers:
+		stagehand.current_state = StagehandController.State.WAITING
+		return
+
+	# Non-cooperative drop-off
+	if stagehand.is_carrying(prop):
+		var dropped: Node2D = stagehand.put_down_prop(prop, props_container)
+		if dropped:
+			dropped.on_put_down(dropped.global_position)
+	else:
+		prop.remove_carrier(stagehand)
+
+	stagehand.advance_task()
+	_process_next_task(stagehand)
 
 
 # =============================================================================

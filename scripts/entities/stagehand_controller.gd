@@ -18,10 +18,13 @@ enum State { IDLE, MOVING, PICKING_UP, CARRYING, PUTTING_DOWN, WAITING }
 var current_state: State = State.IDLE
 var current_path: PackedVector2Array = []
 var path_index: int = 0
-var carried_prop: Node2D = null
+var carried_props: Array[Node2D] = []
 var is_selected: bool = false
 
-# Planning phase: task queue (each entry is { "prop": StaticBody2D, "target": Vector2 })
+# Planning phase: task queue
+# Each entry is one of:
+#   { "action": "pick_up", "prop": StaticBody2D }
+#   { "action": "drop_off", "prop": StaticBody2D, "target": Vector2 }
 var task_queue: Array = []
 var has_assignment: bool:
 	get: return task_queue.size() > 0
@@ -29,6 +32,7 @@ var has_assignment: bool:
 var _pathfinding: Node  # Reference to PathfindingManager
 var _target_position: Vector2
 var _facing_angle: float = 0.0  # Radians, 0 = right, PI/2 = down
+var speed_override: float = 0.0  # When > 0, overrides normal speed (for cooperative carries)
 
 
 func _ready() -> void:
@@ -99,10 +103,13 @@ func _process_movement(delta: float) -> void:
 	_facing_angle = lerp_angle(_facing_angle, target_angle, rotation_speed * delta)
 	queue_redraw()
 
-	# Move
+	# Move — slower when carrying, scaled by load
 	var speed: float = movement_speed
-	if current_state == State.CARRYING:
-		speed *= 0.7  # Slower when carrying
+	if speed_override > 0.0:
+		speed = speed_override
+	elif current_state == State.CARRYING and carried_props.size() > 0:
+		var load_ratio: float = float(get_carried_weight()) / float(strength)
+		speed *= lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
 
 	velocity = direction.normalized() * speed
 	move_and_slide()
@@ -116,7 +123,7 @@ func _arrive_at_destination() -> void:
 	if current_state == State.MOVING:
 		current_state = State.IDLE
 	elif current_state == State.CARRYING:
-		# Stay in carrying state until put down
+		# Stay in carrying state until all props put down
 		pass
 
 	reached_destination.emit()
@@ -139,11 +146,17 @@ func move_to(target_world_pos: Vector2) -> void:
 	else:
 		path_index = 0
 
-	if current_path.size() > 0:
-		if current_state == State.CARRYING:
-			pass  # Stay carrying
-		else:
-			current_state = State.MOVING
+	if current_path.is_empty():
+		# Already at destination or no valid path — signal arrival next frame
+		_arrive_at_destination.call_deferred()
+		return
+
+	if current_state == State.CARRYING:
+		pass  # Stay carrying
+	elif current_state == State.WAITING:
+		current_state = State.MOVING
+	else:
+		current_state = State.MOVING
 
 
 func move_along_path(path: PackedVector2Array) -> void:
@@ -163,40 +176,70 @@ func stop() -> void:
 		current_state = State.IDLE
 
 
+# =============================================================================
+# CARRYING — multi-prop support
+# =============================================================================
+
+func get_carried_weight() -> int:
+	var total: int = 0
+	for prop in carried_props:
+		if prop and prop.get("weight") != null:
+			total += prop.weight
+	return total
+
+
+func get_remaining_strength() -> int:
+	return strength - get_carried_weight()
+
+
 func can_carry(prop: Node2D) -> bool:
-	if prop.has_method("get") and prop.get("weight") != null:
-		return strength >= prop.weight
-	return true  # If prop has no weight, assume it can be carried
+	if prop.get("weight") != null:
+		return get_remaining_strength() >= prop.weight
+	return true
+
+
+func is_carrying(prop: Node2D) -> bool:
+	return prop in carried_props
 
 
 func pick_up(prop: Node2D) -> bool:
-	if carried_prop != null:
+	if is_carrying(prop):
 		return false
 
 	if not can_carry(prop):
-		print(stagehand_name, " (strength ", strength, ") cannot lift ", prop.prop_name, " (weight ", prop.weight, ")")
+		print(stagehand_name, " (remaining str ", get_remaining_strength(), ") cannot lift ", prop.prop_name, " (weight ", prop.weight, ")")
 		return false
 
+	return _do_pick_up(prop)
+
+
+func force_pick_up(prop: Node2D) -> bool:
+	## Pick up without individual strength check (for cooperative carries).
+	if is_carrying(prop):
+		return false
+	return _do_pick_up(prop)
+
+
+func _do_pick_up(prop: Node2D) -> bool:
 	current_state = State.PICKING_UP
-	carried_prop = prop
 
 	# Attach prop to stagehand
 	if prop.get_parent():
 		prop.get_parent().remove_child(prop)
 	add_child(prop)
-	prop.position = Vector2(0, -30)  # Above stagehand
+	carried_props.append(prop)
+	_reposition_carried_props()
 
 	current_state = State.CARRYING
 	return true
 
 
-func put_down(target_parent: Node2D = null) -> Node2D:
-	if carried_prop == null:
+func put_down_prop(prop: Node2D, target_parent: Node2D = null) -> Node2D:
+	if not is_carrying(prop):
 		return null
 
 	current_state = State.PUTTING_DOWN
-	var prop: Node2D = carried_prop
-	carried_prop = null
+	carried_props.erase(prop)
 
 	# Place prop at cone tip position (where the stagehand is "pointing")
 	var tip_offset: float = stagehand_radius + 8.0
@@ -210,25 +253,48 @@ func put_down(target_parent: Node2D = null) -> Node2D:
 		get_parent().add_child(prop)
 		prop.global_position = tip_position
 
-	current_state = State.IDLE
+	if carried_props.size() > 0:
+		current_state = State.CARRYING
+		_reposition_carried_props()
+	else:
+		current_state = State.IDLE
+
 	return prop
 
 
-func assign_task(prop: StaticBody2D, target: Vector2) -> void:
-	# Don't add duplicate props to the queue
-	for task in task_queue:
-		if task.prop == prop:
-			return
-	task_queue.append({ "prop": prop, "target": target })
+func _reposition_carried_props() -> void:
+	for i in range(carried_props.size()):
+		carried_props[i].position = Vector2(0, -30 - i * 15)
+
+
+# =============================================================================
+# TASK QUEUE — explicit pick_up / drop_off actions
+# =============================================================================
+
+func assign_pick_up(prop: StaticBody2D) -> void:
+	# Don't add duplicate pick_up for the same prop
+	if has_pick_up_for(prop):
+		return
+	task_queue.append({ "action": "pick_up", "prop": prop })
 	queue_redraw()
 
 
-func remove_task(prop: StaticBody2D) -> void:
+func assign_drop_off(prop: StaticBody2D, target: Vector2) -> void:
+	task_queue.append({ "action": "drop_off", "prop": prop, "target": target })
+	queue_redraw()
+
+
+func remove_tasks_for_prop(prop: StaticBody2D) -> void:
 	for i in range(task_queue.size() - 1, -1, -1):
 		if task_queue[i].prop == prop:
 			task_queue.remove_at(i)
-			break
 	queue_redraw()
+
+
+func remove_task_at(index: int) -> void:
+	if index >= 0 and index < task_queue.size():
+		task_queue.remove_at(index)
+		queue_redraw()
 
 
 func clear_assignment() -> void:
@@ -250,11 +316,33 @@ func advance_task() -> Dictionary:
 	return task_queue[0]
 
 
-func get_task_index_for_prop(prop: StaticBody2D) -> int:
-	for i in range(task_queue.size()):
-		if task_queue[i].prop == prop:
-			return i
-	return -1
+func has_pick_up_for(prop: StaticBody2D) -> bool:
+	for task in task_queue:
+		if task.action == "pick_up" and task.prop == prop:
+			return true
+	return false
+
+
+func has_drop_off_for(prop: StaticBody2D) -> bool:
+	for task in task_queue:
+		if task.action == "drop_off" and task.prop == prop:
+			return true
+	return false
+
+
+func get_pending_drop_off_prop() -> StaticBody2D:
+	## Returns the first prop that has a pick_up but no matching drop_off yet.
+	var picked_up_props: Array[StaticBody2D] = []
+	var dropped_off_props: Array[StaticBody2D] = []
+	for task in task_queue:
+		if task.action == "pick_up":
+			picked_up_props.append(task.prop)
+		elif task.action == "drop_off":
+			dropped_off_props.append(task.prop)
+	for prop in picked_up_props:
+		if prop not in dropped_off_props:
+			return prop
+	return null
 
 
 func set_selected(value: bool) -> void:
