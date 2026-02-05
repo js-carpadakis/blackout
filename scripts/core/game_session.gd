@@ -16,6 +16,7 @@ const PropScene := preload("res://scenes/entities/prop_base.tscn")
 @onready var planning_hud: CanvasLayer = $PlanningHUD
 
 var selected_stagehand: CharacterBody2D = null
+var selected_prop: StaticBody2D = null
 var stagehands: Array[CharacterBody2D] = []
 var props: Array[StaticBody2D] = []
 
@@ -51,6 +52,10 @@ const STAGE_RIGHT_RECT := Rect2(600, -100, 400, 600)
 # Backstage: 2000x600 rectangle overlapping wings and bottom of stage
 const BACKSTAGE_RECT := Rect2(-1000, -100, 2000, 600)
 
+# Clear zones: 50x50 squares near the top of each wing
+const CLEAR_ZONE_LEFT := Rect2(-825, -92, 50, 50)
+const CLEAR_ZONE_RIGHT := Rect2(775, -92, 50, 50)
+
 # Phase state
 var _is_planning: bool = true
 
@@ -59,12 +64,16 @@ var _dragging_entity: Node2D = null
 var _dragging_target_prop: StaticBody2D = null  # When dragging a target ghost
 var _drag_offset: Vector2 = Vector2.ZERO
 
-# Execution tracking
-var _pending_pick_up: Dictionary = {}  # stagehand -> prop (stagehand moving to pick up)
-var _pending_drop_off: Dictionary = {}  # stagehand -> { prop, target } (stagehand moving to drop off)
-var _waiting_at_prop: Dictionary = {}  # prop -> [stagehands] (waiting for cooperative strength)
-var _cooperative_group: Dictionary = {}  # prop -> { lead: stagehand, helpers: [stagehands] }
-var _waiting_for_put_down: Dictionary = {}  # prop -> [stagehands waiting to pick up after put down]
+# Execution tracking — prop-driven
+enum LegPhase { DISPATCHING, GATHERING, CARRYING, DONE }
+var _active_props: Array[StaticBody2D] = []
+var _prop_execution: Dictionary = {}  # prop -> { "phase": LegPhase, "arrived": [stagehands] }
+var _props_waiting_for_stagehand: Dictionary = {}  # stagehand -> [props waiting for this stagehand]
+var _execution_ending: bool = false  # True once all props are done, waiting for stagehands to return
+
+# Clear zone stagehand assignments (planning phase)
+var _clear_zone_left_stagehand: CharacterBody2D = null
+var _clear_zone_right_stagehand: CharacterBody2D = null
 
 
 func _ready() -> void:
@@ -74,12 +83,16 @@ func _ready() -> void:
 
 	# Configure grid overlay with ellipse shape
 	grid_overlay.set_stage_ellipse(ELLIPSE_CENTER_Y, ELLIPSE_A, ELLIPSE_B)
+	grid_overlay.set_grid_visible(false)
 
-	# Focus camera on stage center
-	camera.focus_on(Vector2(0, 0))
+	# Fit camera to show entire playable area, reserving space for HUD panel
+	# Playable area: wings + stage ellipse, x [-1000, 1000], y [-500, 500]
+	var stage_bounds := Rect2(-1000, -500, 2000, 1000)
+	camera.fit_to_stage(stage_bounds, 260.0)  # 250px panel + 10px gap
 
 	# Connect HUD
 	planning_hud.start_pressed.connect(_start_execution)
+	planning_hud.add_leg_pressed.connect(_on_add_leg_pressed)
 
 	# Start in planning phase
 	GameManager.change_state(GameManager.GameState.PLAYING)
@@ -194,7 +207,7 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 			_drag_offset = stagehand.global_position - world_pos
 			return
 
-	# Check if clicked on prop — start drag
+	# Check if clicked on prop — select prop and start drag
 	for prop in props:
 		var half_size: Vector2 = prop.prop_size / 2.0
 		var prop_rect: Rect2 = Rect2(prop.global_position - half_size, prop.prop_size)
@@ -202,7 +215,7 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 			_dragging_entity = prop
 			prop.is_being_dragged = true
 			_drag_offset = prop.global_position - world_pos
-			_deselect_all()
+			_select_prop(prop)
 			return
 
 	# Clicked on nothing — deselect
@@ -214,12 +227,13 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 	if _dragging_target_prop:
 		var ghost_pos: Vector2 = world_pos + _drag_offset
 		if is_on_stage(ghost_pos):
-			_dragging_target_prop.set_target(ghost_pos)
-			# Update matching drop_off tasks in all assigned stagehands' queues
-			for sh in _dragging_target_prop.assigned_stagehands:
-				for task in sh.task_queue:
-					if task.action == "drop_off" and task.prop == _dragging_target_prop:
-						task.target = ghost_pos
+			# Update the last leg's destination (the one the ghost represents)
+			var prop: StaticBody2D = _dragging_target_prop
+			for i in range(prop.movement_plan.size() - 1, -1, -1):
+				if prop.movement_plan[i].has("destination"):
+					prop.movement_plan[i].destination = ghost_pos
+					break
+			prop.set_target(ghost_pos)
 		return
 
 	if not _dragging_entity:
@@ -246,53 +260,101 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 	if not selected_stagehand:
 		return
 
-	# Check if right-clicked on a prop — toggle pick_up task
+	# Check if right-clicked inside a clear zone — toggle stagehand assignment
+	if CLEAR_ZONE_LEFT.has_point(world_pos):
+		_toggle_clear_zone_assignment(selected_stagehand, true)
+		return
+	if CLEAR_ZONE_RIGHT.has_point(world_pos):
+		_toggle_clear_zone_assignment(selected_stagehand, false)
+		return
+
+	# Check if right-clicked on a prop — toggle stagehand assignment on the active leg
 	for prop in props:
 		var half_size: Vector2 = prop.prop_size / 2.0
 		var prop_rect: Rect2 = Rect2(prop.global_position - half_size, prop.prop_size)
 		if prop_rect.has_point(world_pos):
-			_toggle_pick_up(selected_stagehand, prop)
+			_toggle_stagehand_on_prop(selected_stagehand, prop)
 			return
 
-	# Right-click on stage floor — add drop_off for pending prop, or update last drop_off target
+	# Right-click on stage floor — set destination for the next incomplete leg (one at a time)
 	if selected_stagehand.has_assignment and is_on_stage(world_pos):
-		var pending_prop: StaticBody2D = selected_stagehand.get_pending_drop_off_prop()
-		if pending_prop:
-			# Add a drop_off for the first unmatched pick_up
-			selected_stagehand.assign_drop_off(pending_prop, world_pos)
-			pending_prop.set_target(world_pos)
-			_update_hud()
-			print("Drop-off added: ", selected_stagehand.stagehand_name, " will deliver ", pending_prop.prop_name)
-		else:
-			# All pick_ups have drop_offs — update the most recent drop_off target
-			for i in range(selected_stagehand.task_queue.size() - 1, -1, -1):
-				var task: Dictionary = selected_stagehand.task_queue[i]
-				if task.action == "drop_off":
-					task.target = world_pos
-					task.prop.set_target(world_pos)
-					break
-			_update_hud()
+		for prop in selected_stagehand.assigned_props:
+			var leg_idx: int = prop.find_incomplete_leg_with_stagehand(selected_stagehand)
+			if leg_idx >= 0:
+				prop.movement_plan[leg_idx]["destination"] = world_pos
+				prop.show_target_ghost(true)
+				print("Destination set for ", prop.prop_name, " leg ", leg_idx + 1, ": ", world_pos)
+				_update_hud()
+				return
 		return
 
-	# Right-click in backstage — reposition via select-then-click (move directly, no pathfinding)
+	# Right-click in backstage — reposition stagehand directly
 	if is_in_backstage(world_pos):
 		selected_stagehand.global_position = world_pos
 
 
-func _toggle_pick_up(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
-	# If already has a pick_up for this prop, remove all tasks for it (toggle off)
-	if stagehand.has_pick_up_for(prop):
-		stagehand.remove_tasks_for_prop(prop)
-		prop.remove_assigned_stagehand(stagehand)
+func _toggle_stagehand_on_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
+	# If stagehand is already on any leg of this prop, remove them (toggle off)
+	if prop.is_stagehand_in_any_leg(stagehand):
+		prop.remove_stagehand_from_all_legs(stagehand)
+		stagehand.remove_assigned_prop(prop)
 		_update_hud()
 		print("Unassigned ", stagehand.stagehand_name, " -x- ", prop.prop_name)
 		return
 
-	# Add pick_up task (cooperative — don't clear other stagehands)
-	stagehand.assign_pick_up(prop)
-	prop.add_assigned_stagehand(stagehand)
+	# Find the active leg (one without destination), or create leg 0
+	var active_leg: int = prop.get_active_leg_index()
+	if active_leg == -1:
+		# No incomplete leg — create a new one
+		active_leg = prop.add_leg()
+
+	prop.add_stagehand_to_leg(active_leg, stagehand)
+	stagehand.add_assigned_prop(prop)
 	_update_hud()
-	print("Pick-up added: ", stagehand.stagehand_name, " -> ", prop.prop_name, " (task #", stagehand.task_queue.size(), ")")
+	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name, " leg ", active_leg + 1)
+
+
+func _toggle_clear_zone_assignment(stagehand: CharacterBody2D, is_left: bool) -> void:
+	if is_left:
+		if _clear_zone_left_stagehand == stagehand:
+			_clear_zone_left_stagehand = null
+			print("Unassigned ", stagehand.stagehand_name, " from Clear (L)")
+		else:
+			# If stagehand was on the other zone, remove them from it
+			if _clear_zone_right_stagehand == stagehand:
+				_clear_zone_right_stagehand = null
+			_clear_zone_left_stagehand = stagehand
+			print("Assigned ", stagehand.stagehand_name, " -> Clear (L)")
+	else:
+		if _clear_zone_right_stagehand == stagehand:
+			_clear_zone_right_stagehand = null
+			print("Unassigned ", stagehand.stagehand_name, " from Clear (R)")
+		else:
+			if _clear_zone_left_stagehand == stagehand:
+				_clear_zone_left_stagehand = null
+			_clear_zone_right_stagehand = stagehand
+			print("Assigned ", stagehand.stagehand_name, " -> Clear (R)")
+	_update_hud()
+
+
+func _on_add_leg_pressed() -> void:
+	# Add a new leg to the selected prop (or the first prop the selected stagehand is assigned to)
+	var prop: StaticBody2D = selected_prop
+	if not prop and selected_stagehand and selected_stagehand.assigned_props.size() > 0:
+		prop = selected_stagehand.assigned_props[0]
+
+	if not prop:
+		print("No prop selected for Add Leg")
+		return
+
+	# Only add a new leg if the current active leg already has a destination
+	if prop.get_active_leg_index() >= 0:
+		print("Current leg still needs a destination before adding another")
+		return
+
+	var leg_idx: int = prop.add_leg()
+	_update_hud()
+	print("Added leg ", leg_idx + 1, " to ", prop.prop_name)
 
 
 # --- EXECUTION PHASE INPUT ---
@@ -325,233 +387,409 @@ func _start_execution() -> void:
 	planning_hud.set_phase("BLACKOUT")
 	_deselect_all()
 
-	# Kick off first task for all assigned stagehands
+	# Initialize prop-driven execution
+	_active_props.clear()
+	_prop_execution.clear()
+	_props_waiting_for_stagehand.clear()
+	_execution_ending = false
+
+	for prop in props:
+		if prop.has_plan():
+			prop.current_leg_index = 0
+			_active_props.append(prop)
+			_start_leg(prop)
+
+
+func _end_execution() -> void:
+	_is_planning = true
+	GameManager.change_phase(GameManager.Phase.PLANNING)
+	planning_hud.set_phase("PLANNING")
+
+	# Reset all props — positions stay where they are
+	for prop in props:
+		prop.reset_for_planning()
+
+	# Reset all stagehands — positions stay where they are
 	for stagehand in stagehands:
-		if stagehand.has_assignment:
-			_process_next_task(stagehand)
+		stagehand.reset_for_planning()
+
+	# Clear execution tracking
+	_active_props.clear()
+	_prop_execution.clear()
+	_props_waiting_for_stagehand.clear()
+	_execution_ending = false
+
+	# Clear zone assignments — must be reassigned each round
+	_clear_zone_left_stagehand = null
+	_clear_zone_right_stagehand = null
+
+	_deselect_all()
+	_update_hud()
 
 
 # =============================================================================
-# EXECUTION CALLBACKS
+# EXECUTION — prop-driven leg system
 # =============================================================================
 
-func _process_next_task(stagehand: CharacterBody2D) -> void:
-	var task: Dictionary = stagehand.get_current_task()
-	if task.is_empty():
-		# All tasks done — return to wing
-		_return_to_nearest_wing(stagehand)
-		return
-
-	if task.action == "pick_up":
-		# If another stagehand is already picking up or carrying this prop,
-		# head to their drop-off target instead of the prop's current location
-		if _is_prop_claimed_by_other(task.prop, stagehand):
-			var drop_target: Vector2 = _find_drop_off_target_for_prop(task.prop)
-			if drop_target != Vector2.INF:
-				if not _waiting_for_put_down.has(task.prop):
-					_waiting_for_put_down[task.prop] = []
-				_waiting_for_put_down[task.prop].append(stagehand)
-				_pending_pick_up[stagehand] = task.prop
-				stagehand.move_to(drop_target)
-				return
-		_pending_pick_up[stagehand] = task.prop
-		stagehand.move_to(task.prop.global_position)
-	elif task.action == "drop_off":
-		_pending_drop_off[stagehand] = { "prop": task.prop, "target": task.target }
-		stagehand.move_to(task.target)
-
-
-func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
-	# Arrived for a pick_up?
-	if _pending_pick_up.has(stagehand):
-		var prop: StaticBody2D = _pending_pick_up[stagehand]
-		_pending_pick_up.erase(stagehand)
-		_try_pickup_prop(stagehand, prop)
-		return
-
-	# Arrived for a drop_off?
-	if _pending_drop_off.has(stagehand):
-		var info: Dictionary = _pending_drop_off[stagehand]
-		_pending_drop_off.erase(stagehand)
-		_do_drop_off(stagehand, info.prop)
-		return
-
-
-func _try_pickup_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
-	# If the prop is already being carried (by another stagehand), wait for it to be put down
-	if prop.current_state == prop.PropState.BEING_CARRIED:
-		if not _waiting_for_put_down.has(prop):
-			_waiting_for_put_down[prop] = []
-		_waiting_for_put_down[prop].append(stagehand)
-		stagehand.current_state = StagehandController.State.WAITING
-		return
-
-	# Check if close enough
-	var distance: float = stagehand.global_position.distance_to(prop.global_position)
-	if distance > 75.0:
-		# Retry — move closer
-		_pending_pick_up[stagehand] = prop
-		stagehand.move_to(prop.global_position)
-		return
-
-	# Solo carry: stagehand alone has enough remaining strength
-	if stagehand.get_remaining_strength() >= prop.weight:
-		if stagehand.pick_up(prop):
-			prop.on_picked_up(stagehand)
-			stagehand.advance_task()
-			_process_next_task(stagehand)
-		else:
-			# pick_up failed (already carrying this prop, etc.) — skip task
-			stagehand.advance_task()
-			_process_next_task(stagehand)
-		return
-
-	# Cooperative carry: need to wait for others
-	if not _waiting_at_prop.has(prop):
-		_waiting_at_prop[prop] = []
-	if stagehand not in _waiting_at_prop[prop]:
-		_waiting_at_prop[prop].append(stagehand)
-	stagehand.current_state = StagehandController.State.WAITING
-
-	_check_cooperative_pickup(prop)
-
-
-func _check_cooperative_pickup(prop: StaticBody2D) -> void:
-	if not _waiting_at_prop.has(prop):
-		return
-
-	var waiting: Array = _waiting_at_prop[prop]
-	var total_strength: int = 0
-	for sh in waiting:
-		total_strength += sh.get_remaining_strength()
-
-	if total_strength < prop.weight:
-		return  # Not enough strength yet — keep waiting
-
-	# Enough combined strength! Pick up cooperatively.
-	_waiting_at_prop.erase(prop)
-
-	# First stagehand in the list becomes the lead carrier (prop parented to them)
-	# Use force_pick_up to bypass individual strength check
-	var lead: CharacterBody2D = waiting[0]
-	if lead.force_pick_up(prop):
-		prop.on_picked_up(lead)
-
-	# Track the cooperative group so helpers follow the lead during drop-off
-	var helpers: Array = []
-	for sh in waiting:
-		if sh != lead:
-			helpers.append(sh)
-	_cooperative_group[prop] = { "lead": lead, "helpers": helpers }
-
-	# Calculate the lead's carrying speed so all group members move together
-	var load_ratio: float = float(prop.weight) / float(lead.strength)
-	var group_speed: float = lead.movement_speed * lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
-	lead.speed_override = group_speed
-	for sh in helpers:
-		sh.speed_override = group_speed
-
-	# Advance all stagehands' pick_up tasks
-	for sh in waiting:
-		sh.advance_task()
-		if sh == lead:
-			_process_next_task(sh)
-		else:
-			# Helpers: follow the lead to the drop-off target instead of processing independently
-			prop.add_carrier(sh)
-			var lead_task: Dictionary = lead.get_current_task()
-			if lead_task.has("target"):
-				_pending_drop_off[sh] = { "prop": prop, "target": lead_task.target }
-				sh.move_to(lead_task.target)
-			else:
-				_process_next_task(sh)
-
-
-func _is_prop_claimed_by_other(prop: StaticBody2D, stagehand: CharacterBody2D) -> bool:
-	# Check if another stagehand already has a pending pick_up for this prop
-	for sh_key in _pending_pick_up:
-		if sh_key != stagehand and _pending_pick_up[sh_key] == prop:
-			return true
-	# Check if already being carried
-	if prop.current_state == prop.PropState.BEING_CARRIED:
+func _is_stagehand_busy(sh: CharacterBody2D) -> bool:
+	## A stagehand is busy if they are moving, carrying, or have carried props.
+	if sh.current_state == StagehandController.State.CARRYING:
+		return true
+	if sh.current_state == StagehandController.State.MOVING:
+		return true
+	if sh.carried_props.size() > 0:
 		return true
 	return false
 
 
-func _find_drop_off_target_for_prop(prop: StaticBody2D) -> Vector2:
-	# Check pending drop-offs already in flight
-	for sh_key in _pending_drop_off:
-		var info: Dictionary = _pending_drop_off[sh_key]
-		if info.prop == prop:
-			return info.target
-	# Check task queues of stagehands that have claimed this prop (pending pick_up or carrying)
-	for sh_key in _pending_pick_up:
-		if _pending_pick_up[sh_key] == prop:
-			for task in sh_key.task_queue:
-				if task.action == "drop_off" and task.prop == prop:
-					return task.target
-	for sh in stagehands:
-		if sh.is_carrying(prop):
-			var task: Dictionary = sh.get_current_task()
-			if not task.is_empty() and task.action == "drop_off" and task.prop == prop:
-				return task.target
-	return Vector2.INF
-
-
-func _notify_waiting_for_pickup(prop: StaticBody2D) -> void:
-	if _waiting_for_put_down.has(prop):
-		var waiters: Array = _waiting_for_put_down[prop]
-		_waiting_for_put_down.erase(prop)
-		for waiter in waiters:
-			_pending_pick_up[waiter] = prop
-			waiter.move_to(prop.global_position)
-
-
-func _do_drop_off(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
-	# Check if this is the lead of a cooperative group
-	if _cooperative_group.has(prop) and _cooperative_group[prop].lead == stagehand:
-		var group: Dictionary = _cooperative_group[prop]
-		_cooperative_group.erase(prop)
-
-		# Lead drops the prop
-		var dropped: Node2D = stagehand.put_down_prop(prop, props_container)
-		if dropped:
-			dropped.on_put_down(dropped.global_position)
-
-		# Notify any stagehands waiting to relay-pick this prop
-		_notify_waiting_for_pickup(prop)
-
-		stagehand.speed_override = 0.0
-		stagehand.advance_task()
-		_process_next_task(stagehand)
-
-		# Complete helpers' drop-off tasks too
-		for helper in group.helpers:
-			prop.remove_carrier(helper)
-			_pending_drop_off.erase(helper)
-			helper.speed_override = 0.0
-			helper.advance_task()
-			_process_next_task(helper)
+func _start_leg(prop: StaticBody2D) -> void:
+	var leg: Dictionary = prop.get_current_leg()
+	if leg.is_empty():
 		return
 
-	# Helper arriving at drop-off before lead — wait for the lead
-	if _cooperative_group.has(prop) and stagehand in _cooperative_group[prop].helpers:
+	var leg_stagehands: Array = leg.stagehands
+	# "dispatched" tracks which stagehands were actually sent — only those
+	# should be matched by _find_active_prop_for_stagehand on arrival
+	_prop_execution[prop] = { "phase": LegPhase.DISPATCHING, "arrived": [], "dispatched": [] }
+
+	# Check if all stagehands for this leg are free
+	var all_free: bool = true
+	for sh in leg_stagehands:
+		if _is_stagehand_busy(sh):
+			all_free = false
+			# Register that this prop is waiting for this stagehand
+			if not _props_waiting_for_stagehand.has(sh):
+				_props_waiting_for_stagehand[sh] = []
+			if prop not in _props_waiting_for_stagehand[sh]:
+				_props_waiting_for_stagehand[sh].append(prop)
+
+	if all_free:
+		# Send all stagehands to pick-up position
+		var pickup_pos: Vector2 = prop.get_pickup_position()
+		_prop_execution[prop].dispatched = leg_stagehands.duplicate()
+		for sh in leg_stagehands:
+			sh.move_to(pickup_pos)
+
+
+func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
+	if _is_planning:
+		return
+
+	# Find which active prop's current leg includes this stagehand
+	var prop: StaticBody2D = _find_active_prop_for_stagehand(stagehand)
+	if not prop:
+		# Check if any props were waiting for this stagehand to become free
+		if not _try_dispatch_waiting_prop(stagehand) and _execution_ending:
+			_check_execution_end_condition()
+		return
+
+	var exec: Dictionary = _prop_execution[prop]
+	var phase: LegPhase = exec.phase
+
+	if phase == LegPhase.DISPATCHING or phase == LegPhase.GATHERING:
+		# Stagehand arrived at prop for pickup
+		if stagehand not in exec.arrived:
+			exec.arrived.append(stagehand)
+
+		var leg: Dictionary = prop.get_current_leg()
+		var leg_stagehands: Array = leg.stagehands
+
+		# Check if all stagehands for this leg have arrived
+		if exec.arrived.size() >= leg_stagehands.size():
+			_do_pickup(prop)
+
+	elif phase == LegPhase.CARRYING:
+		# Stagehand arrived at destination — drop off
+		_do_dropoff(prop, stagehand)
+
+
+func _do_pickup(prop: StaticBody2D) -> void:
+	var leg: Dictionary = prop.get_current_leg()
+	var leg_stagehands: Array = leg.stagehands
+
+	if leg_stagehands.size() == 1:
+		# Solo carry
+		var sh: CharacterBody2D = leg_stagehands[0]
+		if sh.get_remaining_strength() >= prop.weight:
+			if sh.pick_up(prop):
+				prop.on_picked_up(sh)
+		else:
+			sh.force_pick_up(prop)
+			prop.on_picked_up(sh)
+	else:
+		# Cooperative carry — first stagehand is lead
+		var lead: CharacterBody2D = leg_stagehands[0]
+		if lead.force_pick_up(prop):
+			prop.on_picked_up(lead)
+
+		# Add all others as carriers
+		for i in range(1, leg_stagehands.size()):
+			prop.add_carrier(leg_stagehands[i])
+
+		# Sync speed across all stagehands in the group
+		var load_ratio: float = float(prop.weight) / float(lead.strength)
+		var group_speed: float = lead.movement_speed * lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
+		for sh in leg_stagehands:
+			sh.speed_override = group_speed
+
+	# Transition to CARRYING phase
+	_prop_execution[prop].phase = LegPhase.CARRYING
+	_prop_execution[prop].arrived = []
+	_prop_execution[prop].dispatched = leg_stagehands.duplicate()
+
+	if leg_stagehands.size() == 1:
+		# Solo carry — try to consolidate with nearby waiting props
+		var sh: CharacterBody2D = leg_stagehands[0]
+		if _try_consolidate_pickup(sh):
+			return  # Routed to next pickup instead of delivering
+		# No consolidation — route to nearest delivery
+		_begin_deliveries(sh)
+	else:
+		# Cooperative carry — route all stagehands to destination
+		var destination: Vector2 = leg.destination
+		for sh in leg_stagehands:
+			sh.move_to(destination)
+
+
+func _do_dropoff(prop: StaticBody2D, stagehand: CharacterBody2D) -> void:
+	var leg: Dictionary = prop.get_current_leg()
+	var leg_stagehands: Array = leg.stagehands
+
+	# Track arrival
+	if stagehand not in _prop_execution[prop].arrived:
+		_prop_execution[prop].arrived.append(stagehand)
+
+	# Wait for lead carrier (first stagehand) to arrive
+	var lead: CharacterBody2D = leg_stagehands[0]
+	if lead not in _prop_execution[prop].arrived:
 		stagehand.current_state = StagehandController.State.WAITING
 		return
 
-	# Non-cooperative drop-off
-	if stagehand.is_carrying(prop):
-		var dropped: Node2D = stagehand.put_down_prop(prop, props_container)
+	# Only the lead performs the actual drop — but only once
+	if _prop_execution[prop].phase != LegPhase.CARRYING:
+		return
+	_prop_execution[prop].phase = LegPhase.DONE
+
+	# Lead drops the prop
+	if lead.is_carrying(prop):
+		var dropped: Node2D = lead.put_down_prop(prop, props_container)
 		if dropped:
 			dropped.on_put_down(dropped.global_position)
+
+	# Clear all carriers and speed overrides
+	for sh in leg_stagehands:
+		prop.remove_carrier(sh)
+		sh.speed_override = 0.0
+
+	# Advance to next leg
+	var next_leg_stagehands: Array = []
+	if prop.current_leg_index + 1 < prop.get_leg_count():
+		next_leg_stagehands = prop.get_leg(prop.current_leg_index + 1).stagehands
+
+	prop.advance_leg()
+
+	# Start next leg of this prop if it exists
+	if prop.current_leg_index < prop.get_leg_count():
+		_start_leg(prop)
 	else:
-		prop.remove_carrier(stagehand)
+		# Prop is complete
+		_active_props.erase(prop)
+		_prop_execution.erase(prop)
+		if _active_props.is_empty():
+			_execution_ending = true
 
-	# Notify any stagehands waiting to relay-pick this prop
-	_notify_waiting_for_pickup(prop)
+	# For each freed stagehand: deliver remaining carried props, dispatch waiting, or return
+	for sh in leg_stagehands:
+		if sh in next_leg_stagehands:
+			continue  # Still needed for this prop's next leg
+		if _route_to_next_carried_prop(sh):
+			continue  # Still has other props to deliver
+		if not _try_dispatch_waiting_prop(sh):
+			_return_to_nearest_wing(sh)
 
-	stagehand.advance_task()
-	_process_next_task(stagehand)
+
+func _find_active_prop_for_stagehand(stagehand: CharacterBody2D) -> StaticBody2D:
+	var best_carry_prop: StaticBody2D = null
+	var best_carry_dist: float = INF
+
+	for prop in _active_props:
+		if not _prop_execution.has(prop):
+			continue
+		var exec: Dictionary = _prop_execution[prop]
+		if exec.phase == LegPhase.DONE:
+			continue
+		# During DISPATCHING, only match stagehands that were actually sent
+		if exec.phase == LegPhase.DISPATCHING:
+			if stagehand in exec.dispatched:
+				return prop
+		else:
+			# CARRYING phase — prefer the prop whose destination is closest
+			# so multi-prop carriers drop the right prop at each stop
+			var leg: Dictionary = prop.get_current_leg()
+			if not leg.is_empty() and stagehand in leg.stagehands:
+				if leg.has("destination"):
+					var dist: float = stagehand.global_position.distance_to(leg.destination)
+					if dist < best_carry_dist:
+						best_carry_dist = dist
+						best_carry_prop = prop
+				elif best_carry_prop == null:
+					best_carry_prop = prop
+
+	return best_carry_prop
+
+
+func _try_dispatch_waiting_prop(stagehand: CharacterBody2D) -> bool:
+	## Try to dispatch this stagehand to a prop that was waiting for them.
+	## Returns true if the stagehand was sent somewhere, false if idle.
+	if not _props_waiting_for_stagehand.has(stagehand):
+		return false
+
+	var waiting_props: Array = _props_waiting_for_stagehand[stagehand]
+	_props_waiting_for_stagehand.erase(stagehand)
+
+	var dispatched: bool = false
+	for prop in waiting_props:
+		if prop in _active_props and _prop_execution.has(prop):
+			if _prop_execution[prop].phase == LegPhase.DISPATCHING:
+				# Re-attempt starting the leg now that this stagehand is free
+				_prop_execution.erase(prop)
+				_start_leg(prop)
+				# Check if the stagehand was actually dispatched this time
+				if _prop_execution.has(prop) and stagehand in _prop_execution[prop].dispatched:
+					dispatched = true
+	return dispatched
+
+
+func _route_to_next_carried_prop(stagehand: CharacterBody2D) -> bool:
+	## If stagehand is still carrying other active props, route to the nearest destination.
+	## Returns true if routed, false if no more deliveries needed.
+	if stagehand.carried_props.is_empty():
+		return false
+
+	var best_prop: StaticBody2D = null
+	var best_dist: float = INF
+
+	for prop in _active_props:
+		if not stagehand.is_carrying(prop):
+			continue
+		if not _prop_execution.has(prop):
+			continue
+		if _prop_execution[prop].phase != LegPhase.CARRYING:
+			continue
+		var leg: Dictionary = prop.get_current_leg()
+		if leg.is_empty() or not leg.has("destination"):
+			continue
+		var dist: float = stagehand.global_position.distance_to(leg.destination)
+		if dist < best_dist:
+			best_dist = dist
+			best_prop = prop
+
+	if best_prop:
+		var leg: Dictionary = best_prop.get_current_leg()
+		stagehand.move_to(leg.destination)
+		return true
+	return false
+
+
+func _try_consolidate_pickup(stagehand: CharacterBody2D) -> bool:
+	## After a solo pickup, check if there's a nearby waiting prop worth grabbing
+	## before delivering. Only consolidate if the pickup is closer than the nearest delivery.
+	var sh_pos: Vector2 = stagehand.global_position
+
+	# Find nearest delivery destination among currently carried active props
+	var nearest_delivery_dist: float = INF
+	for prop in _active_props:
+		if not stagehand.is_carrying(prop):
+			continue
+		if not _prop_execution.has(prop):
+			continue
+		if _prop_execution[prop].phase != LegPhase.CARRYING:
+			continue
+		var leg: Dictionary = prop.get_current_leg()
+		if leg.is_empty() or not leg.has("destination"):
+			continue
+		var dist: float = sh_pos.distance_to(leg.destination)
+		if dist < nearest_delivery_dist:
+			nearest_delivery_dist = dist
+
+	# Find nearest waiting prop this stagehand can solo-carry
+	var best_waiting_prop: StaticBody2D = null
+	var best_pickup_dist: float = INF
+	if _props_waiting_for_stagehand.has(stagehand):
+		for prop in _props_waiting_for_stagehand[stagehand]:
+			if prop not in _active_props or not _prop_execution.has(prop):
+				continue
+			if _prop_execution[prop].phase != LegPhase.DISPATCHING:
+				continue
+			# Only consolidate solo-carry legs
+			var leg: Dictionary = prop.get_current_leg()
+			if leg.is_empty() or leg.stagehands.size() != 1:
+				continue
+			# Check if stagehand can carry this prop
+			if not stagehand.can_carry(prop):
+				continue
+			var pickup_pos: Vector2 = prop.get_pickup_position()
+			var dist: float = sh_pos.distance_to(pickup_pos)
+			if dist < best_pickup_dist:
+				best_pickup_dist = dist
+				best_waiting_prop = prop
+
+	if best_waiting_prop == null:
+		return false
+
+	# Only consolidate if pickup is closer than delivering
+	if best_pickup_dist >= nearest_delivery_dist:
+		return false
+
+	# Consolidate: remove from waiting list and dispatch to pickup
+	_props_waiting_for_stagehand[stagehand].erase(best_waiting_prop)
+	if _props_waiting_for_stagehand[stagehand].is_empty():
+		_props_waiting_for_stagehand.erase(stagehand)
+	_prop_execution[best_waiting_prop].dispatched = [stagehand]
+	stagehand.move_to(best_waiting_prop.get_pickup_position())
+	return true
+
+
+func _begin_deliveries(stagehand: CharacterBody2D) -> void:
+	## Route stagehand to the nearest destination among all carried active props.
+	var best_prop: StaticBody2D = null
+	var best_dist: float = INF
+
+	for prop in _active_props:
+		if not stagehand.is_carrying(prop):
+			continue
+		if not _prop_execution.has(prop):
+			continue
+		if _prop_execution[prop].phase != LegPhase.CARRYING:
+			continue
+		var leg: Dictionary = prop.get_current_leg()
+		if leg.is_empty() or not leg.has("destination"):
+			continue
+		var dist: float = stagehand.global_position.distance_to(leg.destination)
+		if dist < best_dist:
+			best_dist = dist
+			best_prop = prop
+
+	if best_prop:
+		var leg: Dictionary = best_prop.get_current_leg()
+		stagehand.move_to(leg.destination)
+
+
+func _check_execution_end_condition() -> void:
+	# Both clear zones must have an assigned stagehand standing inside
+	if not _clear_zone_left_stagehand or not _clear_zone_right_stagehand:
+		return
+	if not CLEAR_ZONE_LEFT.has_point(_clear_zone_left_stagehand.global_position):
+		return
+	if not CLEAR_ZONE_RIGHT.has_point(_clear_zone_right_stagehand.global_position):
+		return
+	# All other stagehands must be idle
+	for sh in stagehands:
+		if sh == _clear_zone_left_stagehand or sh == _clear_zone_right_stagehand:
+			continue
+		if sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.CARRYING:
+			return
+	_end_execution()
 
 
 # =============================================================================
@@ -564,10 +802,16 @@ func _select_stagehand(stagehand: CharacterBody2D) -> void:
 	stagehand.set_selected(true)
 
 
+func _select_prop(prop: StaticBody2D) -> void:
+	_deselect_all()
+	selected_prop = prop
+
+
 func _deselect_all() -> void:
 	if selected_stagehand:
 		selected_stagehand.set_selected(false)
 		selected_stagehand = null
+	selected_prop = null
 
 
 func _on_stagehand_selected(stagehand: CharacterBody2D) -> void:
@@ -582,7 +826,7 @@ func _on_stagehand_selected(stagehand: CharacterBody2D) -> void:
 
 func _update_hud() -> void:
 	if planning_hud:
-		planning_hud.update_task_list(stagehands)
+		planning_hud.update_task_list(props, _clear_zone_left_stagehand, _clear_zone_right_stagehand)
 
 
 # =============================================================================
@@ -648,5 +892,17 @@ func _get_nearest_wing_position(from_pos: Vector2) -> Vector2:
 
 
 func _return_to_nearest_wing(stagehand: CharacterBody2D) -> void:
+	var zone_target: Variant = _get_clear_zone_target(stagehand)
+	if zone_target != null:
+		stagehand.move_to(zone_target as Vector2)
+		return
 	var wing_pos: Vector2 = _get_nearest_wing_position(stagehand.global_position)
 	stagehand.move_to(wing_pos)
+
+
+func _get_clear_zone_target(stagehand: CharacterBody2D) -> Variant:
+	if stagehand == _clear_zone_left_stagehand:
+		return CLEAR_ZONE_LEFT.get_center()
+	if stagehand == _clear_zone_right_stagehand:
+		return CLEAR_ZONE_RIGHT.get_center()
+	return null
