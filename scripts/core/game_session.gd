@@ -276,18 +276,16 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 			_toggle_stagehand_on_prop(selected_stagehand, prop)
 			return
 
-	# Right-click on stage floor — set destination for incomplete legs this stagehand is on
+	# Right-click on stage floor — set destination for the next incomplete leg (one at a time)
 	if selected_stagehand.has_assignment and is_on_stage(world_pos):
-		var set_any: bool = false
 		for prop in selected_stagehand.assigned_props:
 			var leg_idx: int = prop.find_incomplete_leg_with_stagehand(selected_stagehand)
 			if leg_idx >= 0:
 				prop.movement_plan[leg_idx]["destination"] = world_pos
 				prop.show_target_ghost(true)
-				set_any = true
 				print("Destination set for ", prop.prop_name, " leg ", leg_idx + 1, ": ", world_pos)
-		if set_any:
-			_update_hud()
+				_update_hud()
+				return
 		return
 
 	# Right-click in backstage — reposition stagehand directly
@@ -534,13 +532,23 @@ func _do_pickup(prop: StaticBody2D) -> void:
 		for sh in leg_stagehands:
 			sh.speed_override = group_speed
 
-	# Move all stagehands to destination
+	# Transition to CARRYING phase
 	_prop_execution[prop].phase = LegPhase.CARRYING
 	_prop_execution[prop].arrived = []
 	_prop_execution[prop].dispatched = leg_stagehands.duplicate()
-	var destination: Vector2 = leg.destination
-	for sh in leg_stagehands:
-		sh.move_to(destination)
+
+	if leg_stagehands.size() == 1:
+		# Solo carry — try to consolidate with nearby waiting props
+		var sh: CharacterBody2D = leg_stagehands[0]
+		if _try_consolidate_pickup(sh):
+			return  # Routed to next pickup instead of delivering
+		# No consolidation — route to nearest delivery
+		_begin_deliveries(sh)
+	else:
+		# Cooperative carry — route all stagehands to destination
+		var destination: Vector2 = leg.destination
+		for sh in leg_stagehands:
+			sh.move_to(destination)
 
 
 func _do_dropoff(prop: StaticBody2D, stagehand: CharacterBody2D) -> void:
@@ -590,15 +598,20 @@ func _do_dropoff(prop: StaticBody2D, stagehand: CharacterBody2D) -> void:
 		if _active_props.is_empty():
 			_execution_ending = true
 
-	# For each freed stagehand: dispatch to a waiting prop, or return to wings
+	# For each freed stagehand: deliver remaining carried props, dispatch waiting, or return
 	for sh in leg_stagehands:
 		if sh in next_leg_stagehands:
 			continue  # Still needed for this prop's next leg
+		if _route_to_next_carried_prop(sh):
+			continue  # Still has other props to deliver
 		if not _try_dispatch_waiting_prop(sh):
 			_return_to_nearest_wing(sh)
 
 
 func _find_active_prop_for_stagehand(stagehand: CharacterBody2D) -> StaticBody2D:
+	var best_carry_prop: StaticBody2D = null
+	var best_carry_dist: float = INF
+
 	for prop in _active_props:
 		if not _prop_execution.has(prop):
 			continue
@@ -610,11 +623,19 @@ func _find_active_prop_for_stagehand(stagehand: CharacterBody2D) -> StaticBody2D
 			if stagehand in exec.dispatched:
 				return prop
 		else:
-			# CARRYING phase — match any stagehand in the current leg
+			# CARRYING phase — prefer the prop whose destination is closest
+			# so multi-prop carriers drop the right prop at each stop
 			var leg: Dictionary = prop.get_current_leg()
 			if not leg.is_empty() and stagehand in leg.stagehands:
-				return prop
-	return null
+				if leg.has("destination"):
+					var dist: float = stagehand.global_position.distance_to(leg.destination)
+					if dist < best_carry_dist:
+						best_carry_dist = dist
+						best_carry_prop = prop
+				elif best_carry_prop == null:
+					best_carry_prop = prop
+
+	return best_carry_prop
 
 
 func _try_dispatch_waiting_prop(stagehand: CharacterBody2D) -> bool:
@@ -637,6 +658,121 @@ func _try_dispatch_waiting_prop(stagehand: CharacterBody2D) -> bool:
 				if _prop_execution.has(prop) and stagehand in _prop_execution[prop].dispatched:
 					dispatched = true
 	return dispatched
+
+
+func _route_to_next_carried_prop(stagehand: CharacterBody2D) -> bool:
+	## If stagehand is still carrying other active props, route to the nearest destination.
+	## Returns true if routed, false if no more deliveries needed.
+	if stagehand.carried_props.is_empty():
+		return false
+
+	var best_prop: StaticBody2D = null
+	var best_dist: float = INF
+
+	for prop in _active_props:
+		if not stagehand.is_carrying(prop):
+			continue
+		if not _prop_execution.has(prop):
+			continue
+		if _prop_execution[prop].phase != LegPhase.CARRYING:
+			continue
+		var leg: Dictionary = prop.get_current_leg()
+		if leg.is_empty() or not leg.has("destination"):
+			continue
+		var dist: float = stagehand.global_position.distance_to(leg.destination)
+		if dist < best_dist:
+			best_dist = dist
+			best_prop = prop
+
+	if best_prop:
+		var leg: Dictionary = best_prop.get_current_leg()
+		stagehand.move_to(leg.destination)
+		return true
+	return false
+
+
+func _try_consolidate_pickup(stagehand: CharacterBody2D) -> bool:
+	## After a solo pickup, check if there's a nearby waiting prop worth grabbing
+	## before delivering. Only consolidate if the pickup is closer than the nearest delivery.
+	var sh_pos: Vector2 = stagehand.global_position
+
+	# Find nearest delivery destination among currently carried active props
+	var nearest_delivery_dist: float = INF
+	for prop in _active_props:
+		if not stagehand.is_carrying(prop):
+			continue
+		if not _prop_execution.has(prop):
+			continue
+		if _prop_execution[prop].phase != LegPhase.CARRYING:
+			continue
+		var leg: Dictionary = prop.get_current_leg()
+		if leg.is_empty() or not leg.has("destination"):
+			continue
+		var dist: float = sh_pos.distance_to(leg.destination)
+		if dist < nearest_delivery_dist:
+			nearest_delivery_dist = dist
+
+	# Find nearest waiting prop this stagehand can solo-carry
+	var best_waiting_prop: StaticBody2D = null
+	var best_pickup_dist: float = INF
+	if _props_waiting_for_stagehand.has(stagehand):
+		for prop in _props_waiting_for_stagehand[stagehand]:
+			if prop not in _active_props or not _prop_execution.has(prop):
+				continue
+			if _prop_execution[prop].phase != LegPhase.DISPATCHING:
+				continue
+			# Only consolidate solo-carry legs
+			var leg: Dictionary = prop.get_current_leg()
+			if leg.is_empty() or leg.stagehands.size() != 1:
+				continue
+			# Check if stagehand can carry this prop
+			if not stagehand.can_carry(prop):
+				continue
+			var pickup_pos: Vector2 = prop.get_pickup_position()
+			var dist: float = sh_pos.distance_to(pickup_pos)
+			if dist < best_pickup_dist:
+				best_pickup_dist = dist
+				best_waiting_prop = prop
+
+	if best_waiting_prop == null:
+		return false
+
+	# Only consolidate if pickup is closer than delivering
+	if best_pickup_dist >= nearest_delivery_dist:
+		return false
+
+	# Consolidate: remove from waiting list and dispatch to pickup
+	_props_waiting_for_stagehand[stagehand].erase(best_waiting_prop)
+	if _props_waiting_for_stagehand[stagehand].is_empty():
+		_props_waiting_for_stagehand.erase(stagehand)
+	_prop_execution[best_waiting_prop].dispatched = [stagehand]
+	stagehand.move_to(best_waiting_prop.get_pickup_position())
+	return true
+
+
+func _begin_deliveries(stagehand: CharacterBody2D) -> void:
+	## Route stagehand to the nearest destination among all carried active props.
+	var best_prop: StaticBody2D = null
+	var best_dist: float = INF
+
+	for prop in _active_props:
+		if not stagehand.is_carrying(prop):
+			continue
+		if not _prop_execution.has(prop):
+			continue
+		if _prop_execution[prop].phase != LegPhase.CARRYING:
+			continue
+		var leg: Dictionary = prop.get_current_leg()
+		if leg.is_empty() or not leg.has("destination"):
+			continue
+		var dist: float = stagehand.global_position.distance_to(leg.destination)
+		if dist < best_dist:
+			best_dist = dist
+			best_prop = prop
+
+	if best_prop:
+		var leg: Dictionary = best_prop.get_current_leg()
+		stagehand.move_to(leg.destination)
 
 
 func _check_execution_end_condition() -> void:
