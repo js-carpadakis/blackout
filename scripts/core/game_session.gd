@@ -52,6 +52,10 @@ const STAGE_RIGHT_RECT := Rect2(600, -100, 400, 600)
 # Backstage: 2000x600 rectangle overlapping wings and bottom of stage
 const BACKSTAGE_RECT := Rect2(-1000, -100, 2000, 600)
 
+# Clear zones: 50x50 squares near the top of each wing
+const CLEAR_ZONE_LEFT := Rect2(-825, -92, 50, 50)
+const CLEAR_ZONE_RIGHT := Rect2(775, -92, 50, 50)
+
 # Phase state
 var _is_planning: bool = true
 
@@ -66,6 +70,10 @@ var _active_props: Array[StaticBody2D] = []
 var _prop_execution: Dictionary = {}  # prop -> { "phase": LegPhase, "arrived": [stagehands] }
 var _props_waiting_for_stagehand: Dictionary = {}  # stagehand -> [props waiting for this stagehand]
 var _execution_ending: bool = false  # True once all props are done, waiting for stagehands to return
+
+# Clear zone stagehand assignments (planning phase)
+var _clear_zone_left_stagehand: CharacterBody2D = null
+var _clear_zone_right_stagehand: CharacterBody2D = null
 
 
 func _ready() -> void:
@@ -252,6 +260,14 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 	if not selected_stagehand:
 		return
 
+	# Check if right-clicked inside a clear zone — toggle stagehand assignment
+	if CLEAR_ZONE_LEFT.has_point(world_pos):
+		_toggle_clear_zone_assignment(selected_stagehand, true)
+		return
+	if CLEAR_ZONE_RIGHT.has_point(world_pos):
+		_toggle_clear_zone_assignment(selected_stagehand, false)
+		return
+
 	# Check if right-clicked on a prop — toggle stagehand assignment on the active leg
 	for prop in props:
 		var half_size: Vector2 = prop.prop_size / 2.0
@@ -298,6 +314,29 @@ func _toggle_stagehand_on_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -
 	stagehand.add_assigned_prop(prop)
 	_update_hud()
 	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name, " leg ", active_leg + 1)
+
+
+func _toggle_clear_zone_assignment(stagehand: CharacterBody2D, is_left: bool) -> void:
+	if is_left:
+		if _clear_zone_left_stagehand == stagehand:
+			_clear_zone_left_stagehand = null
+			print("Unassigned ", stagehand.stagehand_name, " from Clear (L)")
+		else:
+			# If stagehand was on the other zone, remove them from it
+			if _clear_zone_right_stagehand == stagehand:
+				_clear_zone_right_stagehand = null
+			_clear_zone_left_stagehand = stagehand
+			print("Assigned ", stagehand.stagehand_name, " -> Clear (L)")
+	else:
+		if _clear_zone_right_stagehand == stagehand:
+			_clear_zone_right_stagehand = null
+			print("Unassigned ", stagehand.stagehand_name, " from Clear (R)")
+		else:
+			if _clear_zone_left_stagehand == stagehand:
+				_clear_zone_left_stagehand = null
+			_clear_zone_right_stagehand = stagehand
+			print("Assigned ", stagehand.stagehand_name, " -> Clear (R)")
+	_update_hud()
 
 
 func _on_add_leg_pressed() -> void:
@@ -382,6 +421,10 @@ func _end_execution() -> void:
 	_props_waiting_for_stagehand.clear()
 	_execution_ending = false
 
+	# Clear zone assignments — must be reassigned each round
+	_clear_zone_left_stagehand = null
+	_clear_zone_right_stagehand = null
+
 	_deselect_all()
 	_update_hud()
 
@@ -439,14 +482,7 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 	if not prop:
 		# Check if any props were waiting for this stagehand to become free
 		if not _try_dispatch_waiting_prop(stagehand) and _execution_ending:
-			# Check if all stagehands have finished moving
-			var all_idle: bool = true
-			for sh in stagehands:
-				if sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.CARRYING:
-					all_idle = false
-					break
-			if all_idle:
-				_end_execution()
+			_check_execution_end_condition()
 		return
 
 	var exec: Dictionary = _prop_execution[prop]
@@ -603,6 +639,23 @@ func _try_dispatch_waiting_prop(stagehand: CharacterBody2D) -> bool:
 	return dispatched
 
 
+func _check_execution_end_condition() -> void:
+	# Both clear zones must have an assigned stagehand standing inside
+	if not _clear_zone_left_stagehand or not _clear_zone_right_stagehand:
+		return
+	if not CLEAR_ZONE_LEFT.has_point(_clear_zone_left_stagehand.global_position):
+		return
+	if not CLEAR_ZONE_RIGHT.has_point(_clear_zone_right_stagehand.global_position):
+		return
+	# All other stagehands must be idle
+	for sh in stagehands:
+		if sh == _clear_zone_left_stagehand or sh == _clear_zone_right_stagehand:
+			continue
+		if sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.CARRYING:
+			return
+	_end_execution()
+
+
 # =============================================================================
 # SELECTION
 # =============================================================================
@@ -637,7 +690,7 @@ func _on_stagehand_selected(stagehand: CharacterBody2D) -> void:
 
 func _update_hud() -> void:
 	if planning_hud:
-		planning_hud.update_task_list(props)
+		planning_hud.update_task_list(props, _clear_zone_left_stagehand, _clear_zone_right_stagehand)
 
 
 # =============================================================================
@@ -703,5 +756,17 @@ func _get_nearest_wing_position(from_pos: Vector2) -> Vector2:
 
 
 func _return_to_nearest_wing(stagehand: CharacterBody2D) -> void:
+	var zone_target: Variant = _get_clear_zone_target(stagehand)
+	if zone_target != null:
+		stagehand.move_to(zone_target as Vector2)
+		return
 	var wing_pos: Vector2 = _get_nearest_wing_position(stagehand.global_position)
 	stagehand.move_to(wing_pos)
+
+
+func _get_clear_zone_target(stagehand: CharacterBody2D) -> Variant:
+	if stagehand == _clear_zone_left_stagehand:
+		return CLEAR_ZONE_LEFT.get_center()
+	if stagehand == _clear_zone_right_stagehand:
+		return CLEAR_ZONE_RIGHT.get_center()
+	return null
