@@ -65,6 +65,7 @@ enum LegPhase { DISPATCHING, GATHERING, CARRYING, DONE }
 var _active_props: Array[StaticBody2D] = []
 var _prop_execution: Dictionary = {}  # prop -> { "phase": LegPhase, "arrived": [stagehands] }
 var _props_waiting_for_stagehand: Dictionary = {}  # stagehand -> [props waiting for this stagehand]
+var _execution_ending: bool = false  # True once all props are done, waiting for stagehands to return
 
 
 func _ready() -> void:
@@ -74,9 +75,12 @@ func _ready() -> void:
 
 	# Configure grid overlay with ellipse shape
 	grid_overlay.set_stage_ellipse(ELLIPSE_CENTER_Y, ELLIPSE_A, ELLIPSE_B)
+	grid_overlay.set_grid_visible(false)
 
-	# Focus camera on stage center
-	camera.focus_on(Vector2(0, 0))
+	# Fit camera to show entire playable area, reserving space for HUD panel
+	# Playable area: wings + stage ellipse, x [-1000, 1000], y [-500, 500]
+	var stage_bounds := Rect2(-1000, -500, 2000, 1000)
+	camera.fit_to_stage(stage_bounds, 260.0)  # 250px panel + 10px gap
 
 	# Connect HUD
 	planning_hud.start_pressed.connect(_start_execution)
@@ -263,7 +267,7 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 			var leg_idx: int = prop.find_incomplete_leg_with_stagehand(selected_stagehand)
 			if leg_idx >= 0:
 				prop.movement_plan[leg_idx]["destination"] = world_pos
-				prop.queue_redraw()
+				prop.show_target_ghost(true)
 				set_any = true
 				print("Destination set for ", prop.prop_name, " leg ", leg_idx + 1, ": ", world_pos)
 		if set_any:
@@ -350,12 +354,36 @@ func _start_execution() -> void:
 	_active_props.clear()
 	_prop_execution.clear()
 	_props_waiting_for_stagehand.clear()
+	_execution_ending = false
 
 	for prop in props:
 		if prop.has_plan():
 			prop.current_leg_index = 0
 			_active_props.append(prop)
 			_start_leg(prop)
+
+
+func _end_execution() -> void:
+	_is_planning = true
+	GameManager.change_phase(GameManager.Phase.PLANNING)
+	planning_hud.set_phase("PLANNING")
+
+	# Reset all props — positions stay where they are
+	for prop in props:
+		prop.reset_for_planning()
+
+	# Reset all stagehands — positions stay where they are
+	for stagehand in stagehands:
+		stagehand.reset_for_planning()
+
+	# Clear execution tracking
+	_active_props.clear()
+	_prop_execution.clear()
+	_props_waiting_for_stagehand.clear()
+	_execution_ending = false
+
+	_deselect_all()
+	_update_hud()
 
 
 # =============================================================================
@@ -410,7 +438,15 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 	var prop: StaticBody2D = _find_active_prop_for_stagehand(stagehand)
 	if not prop:
 		# Check if any props were waiting for this stagehand to become free
-		_try_dispatch_waiting_prop(stagehand)
+		if not _try_dispatch_waiting_prop(stagehand) and _execution_ending:
+			# Check if all stagehands have finished moving
+			var all_idle: bool = true
+			for sh in stagehands:
+				if sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.CARRYING:
+					all_idle = false
+					break
+			if all_idle:
+				_end_execution()
 		return
 
 	var exec: Dictionary = _prop_execution[prop]
@@ -515,6 +551,8 @@ func _do_dropoff(prop: StaticBody2D, stagehand: CharacterBody2D) -> void:
 		# Prop is complete
 		_active_props.erase(prop)
 		_prop_execution.erase(prop)
+		if _active_props.is_empty():
+			_execution_ending = true
 
 	# For each freed stagehand: dispatch to a waiting prop, or return to wings
 	for sh in leg_stagehands:

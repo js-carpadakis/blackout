@@ -284,6 +284,14 @@ func clear_assignment() -> void:
 	queue_redraw()
 
 
+func reset_for_planning() -> void:
+	clear_assignment()
+	stop()
+	speed_override = 0.0
+	carried_props.clear()
+	current_state = State.IDLE
+
+
 func set_selected(value: bool) -> void:
 	is_selected = value
 	queue_redraw()

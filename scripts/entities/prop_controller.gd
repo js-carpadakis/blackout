@@ -221,6 +221,14 @@ func clear_plan() -> void:
 	queue_redraw()
 
 
+func reset_for_planning() -> void:
+	clear_plan()
+	_show_ghost = false
+	current_state = PropState.STORED
+	carriers.clear()
+	queue_redraw()
+
+
 func get_active_leg_index() -> int:
 	## Returns the index of the leg that doesn't yet have a destination, or -1
 	for i in range(movement_plan.size()):

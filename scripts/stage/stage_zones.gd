@@ -41,6 +41,7 @@ func _draw() -> void:
 	_draw_house()
 	_draw_floor()
 	_draw_wings()
+	_draw_clear_zones()
 
 
 func _draw_backstage() -> void:
@@ -100,6 +101,43 @@ func _draw_wings() -> void:
 		var section_rect := Rect2(Vector2(sr_x, section_y), Vector2(wing_width, section_height))
 		draw_rect(section_rect, wing_color)
 		draw_rect(section_rect, zone_border_color, false, 2.0)
+
+
+func _draw_clear_zones() -> void:
+	var zone_size := Vector2(50, 50)
+	var margin := 8.0
+	var clear_zone_color := Color(0.2, 0.25, 0.2, 0.9)
+	var clear_zone_border := Color(0.4, 0.5, 0.4, 0.8)
+
+	# Stage left clear zone — top edge of left wing, centered horizontally
+	var sl_x: float = -backstage_width / 2.0
+	var sl_center_x: float = sl_x + wing_width / 2.0
+	var sl_pos := Vector2(sl_center_x - zone_size.x / 2.0, wing_top_y + margin)
+	var sl_rect := Rect2(sl_pos, zone_size)
+	draw_rect(sl_rect, clear_zone_color)
+	draw_rect(sl_rect, clear_zone_border, false, 2.0)
+	_draw_headphones(sl_pos + zone_size / 2.0, 14.0, clear_zone_border)
+
+	# Stage right clear zone — top edge of right wing, centered horizontally
+	var sr_x: float = backstage_width / 2.0 - wing_width
+	var sr_center_x: float = sr_x + wing_width / 2.0
+	var sr_pos := Vector2(sr_center_x - zone_size.x / 2.0, wing_top_y + margin)
+	var sr_rect := Rect2(sr_pos, zone_size)
+	draw_rect(sr_rect, clear_zone_color)
+	draw_rect(sr_rect, clear_zone_border, false, 2.0)
+	_draw_headphones(sr_pos + zone_size / 2.0, 14.0, clear_zone_border)
+
+
+func _draw_headphones(center: Vector2, radius: float, color: Color) -> void:
+	var line_w := 2.0
+	# Headband arc (top half)
+	draw_arc(center + Vector2(0, 2), radius, PI, TAU, 24, color, line_w)
+	# Left ear cup
+	var left_ear := center + Vector2(-radius, 2)
+	draw_rect(Rect2(left_ear - Vector2(3, -1), Vector2(6, 10)), color)
+	# Right ear cup
+	var right_ear := center + Vector2(radius, 2)
+	draw_rect(Rect2(right_ear - Vector2(3, -1), Vector2(6, 10)), color)
 
 
 func _draw_house() -> void:
