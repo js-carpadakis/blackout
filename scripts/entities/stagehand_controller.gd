@@ -21,13 +21,10 @@ var path_index: int = 0
 var carried_props: Array[Node2D] = []
 var is_selected: bool = false
 
-# Planning phase: task queue
-# Each entry is one of:
-#   { "action": "pick_up", "prop": StaticBody2D }
-#   { "action": "drop_off", "prop": StaticBody2D, "target": Vector2 }
-var task_queue: Array = []
+# Planning phase: props this stagehand is assigned to (across any legs)
+var assigned_props: Array[StaticBody2D] = []
 var has_assignment: bool:
-	get: return task_queue.size() > 0
+	get: return assigned_props.size() > 0
 
 var _pathfinding: Node  # Reference to PathfindingManager
 var _target_position: Vector2
@@ -268,81 +265,23 @@ func _reposition_carried_props() -> void:
 
 
 # =============================================================================
-# TASK QUEUE — explicit pick_up / drop_off actions
+# ASSIGNMENT TRACKING
 # =============================================================================
 
-func assign_pick_up(prop: StaticBody2D) -> void:
-	# Don't add duplicate pick_up for the same prop
-	if has_pick_up_for(prop):
-		return
-	task_queue.append({ "action": "pick_up", "prop": prop })
-	queue_redraw()
-
-
-func assign_drop_off(prop: StaticBody2D, target: Vector2) -> void:
-	task_queue.append({ "action": "drop_off", "prop": prop, "target": target })
-	queue_redraw()
-
-
-func remove_tasks_for_prop(prop: StaticBody2D) -> void:
-	for i in range(task_queue.size() - 1, -1, -1):
-		if task_queue[i].prop == prop:
-			task_queue.remove_at(i)
-	queue_redraw()
-
-
-func remove_task_at(index: int) -> void:
-	if index >= 0 and index < task_queue.size():
-		task_queue.remove_at(index)
+func add_assigned_prop(prop: StaticBody2D) -> void:
+	if prop not in assigned_props:
+		assigned_props.append(prop)
 		queue_redraw()
 
 
-func clear_assignment() -> void:
-	task_queue.clear()
+func remove_assigned_prop(prop: StaticBody2D) -> void:
+	assigned_props.erase(prop)
 	queue_redraw()
 
 
-func get_current_task() -> Dictionary:
-	if task_queue.is_empty():
-		return {}
-	return task_queue[0]
-
-
-func advance_task() -> Dictionary:
-	if not task_queue.is_empty():
-		task_queue.pop_front()
-	if task_queue.is_empty():
-		return {}
-	return task_queue[0]
-
-
-func has_pick_up_for(prop: StaticBody2D) -> bool:
-	for task in task_queue:
-		if task.action == "pick_up" and task.prop == prop:
-			return true
-	return false
-
-
-func has_drop_off_for(prop: StaticBody2D) -> bool:
-	for task in task_queue:
-		if task.action == "drop_off" and task.prop == prop:
-			return true
-	return false
-
-
-func get_pending_drop_off_prop() -> StaticBody2D:
-	## Returns the first prop that has a pick_up but no matching drop_off yet.
-	var picked_up_props: Array[StaticBody2D] = []
-	var dropped_off_props: Array[StaticBody2D] = []
-	for task in task_queue:
-		if task.action == "pick_up":
-			picked_up_props.append(task.prop)
-		elif task.action == "drop_off":
-			dropped_off_props.append(task.prop)
-	for prop in picked_up_props:
-		if prop not in dropped_off_props:
-			return prop
-	return null
+func clear_assignment() -> void:
+	assigned_props.clear()
+	queue_redraw()
 
 
 func set_selected(value: bool) -> void:
