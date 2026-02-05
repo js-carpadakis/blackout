@@ -64,6 +64,7 @@ var _pending_pick_up: Dictionary = {}  # stagehand -> prop (stagehand moving to 
 var _pending_drop_off: Dictionary = {}  # stagehand -> { prop, target } (stagehand moving to drop off)
 var _waiting_at_prop: Dictionary = {}  # prop -> [stagehands] (waiting for cooperative strength)
 var _cooperative_group: Dictionary = {}  # prop -> { lead: stagehand, helpers: [stagehands] }
+var _waiting_for_put_down: Dictionary = {}  # prop -> [stagehands waiting to pick up after put down]
 
 
 func _ready() -> void:
@@ -342,6 +343,17 @@ func _process_next_task(stagehand: CharacterBody2D) -> void:
 		return
 
 	if task.action == "pick_up":
+		# If another stagehand is already picking up or carrying this prop,
+		# head to their drop-off target instead of the prop's current location
+		if _is_prop_claimed_by_other(task.prop, stagehand):
+			var drop_target: Vector2 = _find_drop_off_target_for_prop(task.prop)
+			if drop_target != Vector2.INF:
+				if not _waiting_for_put_down.has(task.prop):
+					_waiting_for_put_down[task.prop] = []
+				_waiting_for_put_down[task.prop].append(stagehand)
+				_pending_pick_up[stagehand] = task.prop
+				stagehand.move_to(drop_target)
+				return
 		_pending_pick_up[stagehand] = task.prop
 		stagehand.move_to(task.prop.global_position)
 	elif task.action == "drop_off":
@@ -366,10 +378,12 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 
 
 func _try_pickup_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
-	# If the prop is already being carried (by another stagehand), skip this pick_up
+	# If the prop is already being carried (by another stagehand), wait for it to be put down
 	if prop.current_state == prop.PropState.BEING_CARRIED:
-		stagehand.advance_task()
-		_process_next_task(stagehand)
+		if not _waiting_for_put_down.has(prop):
+			_waiting_for_put_down[prop] = []
+		_waiting_for_put_down[prop].append(stagehand)
+		stagehand.current_state = StagehandController.State.WAITING
 		return
 
 	# Check if close enough
@@ -453,6 +467,46 @@ func _check_cooperative_pickup(prop: StaticBody2D) -> void:
 				_process_next_task(sh)
 
 
+func _is_prop_claimed_by_other(prop: StaticBody2D, stagehand: CharacterBody2D) -> bool:
+	# Check if another stagehand already has a pending pick_up for this prop
+	for sh_key in _pending_pick_up:
+		if sh_key != stagehand and _pending_pick_up[sh_key] == prop:
+			return true
+	# Check if already being carried
+	if prop.current_state == prop.PropState.BEING_CARRIED:
+		return true
+	return false
+
+
+func _find_drop_off_target_for_prop(prop: StaticBody2D) -> Vector2:
+	# Check pending drop-offs already in flight
+	for sh_key in _pending_drop_off:
+		var info: Dictionary = _pending_drop_off[sh_key]
+		if info.prop == prop:
+			return info.target
+	# Check task queues of stagehands that have claimed this prop (pending pick_up or carrying)
+	for sh_key in _pending_pick_up:
+		if _pending_pick_up[sh_key] == prop:
+			for task in sh_key.task_queue:
+				if task.action == "drop_off" and task.prop == prop:
+					return task.target
+	for sh in stagehands:
+		if sh.is_carrying(prop):
+			var task: Dictionary = sh.get_current_task()
+			if not task.is_empty() and task.action == "drop_off" and task.prop == prop:
+				return task.target
+	return Vector2.INF
+
+
+func _notify_waiting_for_pickup(prop: StaticBody2D) -> void:
+	if _waiting_for_put_down.has(prop):
+		var waiters: Array = _waiting_for_put_down[prop]
+		_waiting_for_put_down.erase(prop)
+		for waiter in waiters:
+			_pending_pick_up[waiter] = prop
+			waiter.move_to(prop.global_position)
+
+
 func _do_drop_off(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
 	# Check if this is the lead of a cooperative group
 	if _cooperative_group.has(prop) and _cooperative_group[prop].lead == stagehand:
@@ -463,6 +517,9 @@ func _do_drop_off(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
 		var dropped: Node2D = stagehand.put_down_prop(prop, props_container)
 		if dropped:
 			dropped.on_put_down(dropped.global_position)
+
+		# Notify any stagehands waiting to relay-pick this prop
+		_notify_waiting_for_pickup(prop)
 
 		stagehand.speed_override = 0.0
 		stagehand.advance_task()
@@ -489,6 +546,9 @@ func _do_drop_off(stagehand: CharacterBody2D, prop: StaticBody2D) -> void:
 			dropped.on_put_down(dropped.global_position)
 	else:
 		prop.remove_carrier(stagehand)
+
+	# Notify any stagehands waiting to relay-pick this prop
+	_notify_waiting_for_pickup(prop)
 
 	stagehand.advance_task()
 	_process_next_task(stagehand)
