@@ -33,14 +33,28 @@ grow_horizontal = 2
 grow_vertical = 0
 text = "Start Blackout [Space]"
 
+[node name="AddLegButton" type="Button" parent="."]
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -100.0
+offset_top = -100.0
+offset_right = 100.0
+offset_bottom = -65.0
+grow_horizontal = 2
+grow_vertical = 0
+text = "Add Leg (Relay)"
+
 [node name="TaskPanel" type="PanelContainer" parent="."]
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -220.0
+offset_left = -250.0
 offset_top = 10.0
 offset_right = -10.0
-offset_bottom = 300.0
+offset_bottom = 400.0
 grow_horizontal = 0
 
 [node name="TaskList" type="VBoxContainer" parent="TaskPanel"]
