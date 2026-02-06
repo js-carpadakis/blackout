@@ -14,6 +14,7 @@ const PropScene := preload("res://scenes/entities/prop_base.tscn")
 @onready var props_container: Node2D = $StageLayout/Props
 @onready var grid_overlay: Node2D = $StageLayout/GridOverlay
 @onready var planning_hud: CanvasLayer = $PlanningHUD
+@onready var path_preview: Node2D = $StageLayout/PathPreview
 
 var selected_stagehand: CharacterBody2D = null
 var selected_prop: StaticBody2D = null
@@ -97,6 +98,9 @@ func _ready() -> void:
 	# Start in planning phase
 	GameManager.change_state(GameManager.GameState.PLAYING)
 	GameManager.change_phase(GameManager.Phase.PLANNING)
+
+	# Initialize path preview
+	path_preview.setup(pathfinding, CLEAR_ZONE_LEFT.get_center(), CLEAR_ZONE_RIGHT.get_center())
 
 	# Spawn initial stagehands for testing
 	_spawn_test_entities()
@@ -234,6 +238,7 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 					prop.movement_plan[i].destination = ghost_pos
 					break
 			prop.set_target(ghost_pos)
+		path_preview.invalidate(true)
 		return
 
 	if not _dragging_entity:
@@ -247,6 +252,9 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 
 	_dragging_entity.global_position = target_pos
 
+	if _is_dragging_affects_selected_path():
+		path_preview.invalidate()
+
 
 func _planning_handle_release() -> void:
 	if _dragging_entity and _dragging_entity is StaticBody2D:
@@ -254,6 +262,16 @@ func _planning_handle_release() -> void:
 	_dragging_entity = null
 	_dragging_target_prop = null
 	_drag_offset = Vector2.ZERO
+
+
+func _is_dragging_affects_selected_path() -> bool:
+	if not selected_stagehand:
+		return false
+	if _dragging_entity == selected_stagehand:
+		return true
+	if _dragging_entity is StaticBody2D and _dragging_entity in selected_stagehand.assigned_props:
+		return true
+	return false
 
 
 func _planning_handle_right_click(world_pos: Vector2) -> void:
@@ -285,6 +303,7 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 				prop.show_target_ghost(true)
 				print("Destination set for ", prop.prop_name, " leg ", leg_idx + 1, ": ", world_pos)
 				_update_hud()
+				path_preview.invalidate(true)
 				return
 		return
 
@@ -299,6 +318,7 @@ func _toggle_stagehand_on_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -
 		prop.remove_stagehand_from_all_legs(stagehand)
 		stagehand.remove_assigned_prop(prop)
 		_update_hud()
+		path_preview.invalidate(true)
 		print("Unassigned ", stagehand.stagehand_name, " -x- ", prop.prop_name)
 		return
 
@@ -311,6 +331,7 @@ func _toggle_stagehand_on_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -
 	prop.add_stagehand_to_leg(active_leg, stagehand)
 	stagehand.add_assigned_prop(prop)
 	_update_hud()
+	path_preview.invalidate(true)
 	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name, " leg ", active_leg + 1)
 
 
@@ -335,6 +356,7 @@ func _toggle_clear_zone_assignment(stagehand: CharacterBody2D, is_left: bool) ->
 			_clear_zone_right_stagehand = stagehand
 			print("Assigned ", stagehand.stagehand_name, " -> Clear (R)")
 	_update_hud()
+	path_preview.set_clear_zone_stagehands(_clear_zone_left_stagehand, _clear_zone_right_stagehand)
 
 
 func _on_add_leg_pressed() -> void:
@@ -386,6 +408,7 @@ func _start_execution() -> void:
 	GameManager.start_execution()
 	planning_hud.set_phase("BLACKOUT")
 	_deselect_all()
+	path_preview.set_execution_mode(true)
 
 	# Initialize prop-driven execution
 	_active_props.clear()
@@ -424,6 +447,7 @@ func _end_execution() -> void:
 	_clear_zone_right_stagehand = null
 
 	_deselect_all()
+	path_preview.set_execution_mode(false)
 	_update_hud()
 
 
@@ -800,6 +824,7 @@ func _select_stagehand(stagehand: CharacterBody2D) -> void:
 	_deselect_all()
 	selected_stagehand = stagehand
 	stagehand.set_selected(true)
+	path_preview.set_stagehand(stagehand)
 
 
 func _select_prop(prop: StaticBody2D) -> void:
@@ -812,6 +837,7 @@ func _deselect_all() -> void:
 		selected_stagehand.set_selected(false)
 		selected_stagehand = null
 	selected_prop = null
+	path_preview.clear()
 
 
 func _on_stagehand_selected(stagehand: CharacterBody2D) -> void:
