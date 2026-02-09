@@ -46,7 +46,11 @@ func update_task_list(all_props: Array[StaticBody2D], clear_left: CharacterBody2
 		entry.add_theme_font_size_override("font_size", 14)
 
 		if prop.get_leg_count() > 0:
-			var header: String = "%s (wt %d):" % [prop.prop_name, prop.weight]
+			var trait_labels: PackedStringArray = prop.get_trait_labels()
+			var header: String = "%s (wt %d)" % [prop.prop_name, prop.weight]
+			if trait_labels.size() > 0:
+				header += " [%s]" % ", ".join(trait_labels)
+			header += ":"
 			var lines: PackedStringArray = [header]
 
 			for i in range(prop.get_leg_count()):
@@ -63,9 +67,9 @@ func update_task_list(all_props: Array[StaticBody2D], clear_left: CharacterBody2
 				var names_str: String = ", ".join(stagehand_names) if stagehand_names.size() > 0 else "none"
 				var leg_line: String = "  Leg %d: %s -> %s" % [i + 1, names_str, dest_str]
 
-				# Color red if assigned strength < prop weight
+				# Color red if assigned strength < required strength
 				var leg_strength: int = prop.get_leg_stagehand_strength(i)
-				if leg_strength < prop.weight and leg.stagehands.size() > 0:
+				if leg_strength < prop.get_required_strength() and leg.stagehands.size() > 0:
 					leg_line += " [weak!]"
 
 				lines.append(leg_line)

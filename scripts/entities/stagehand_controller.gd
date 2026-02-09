@@ -6,7 +6,7 @@ signal reached_destination
 signal task_completed
 signal selected(stagehand: CharacterBody2D)
 
-enum State { IDLE, MOVING, PICKING_UP, CARRYING, PUTTING_DOWN, WAITING }
+enum State { IDLE, MOVING, PICKING_UP, CARRYING, PUTTING_DOWN, WAITING, PUSHING }
 
 @export var movement_speed: float = 150.0
 @export var rotation_speed: float = 10.0
@@ -19,6 +19,7 @@ var current_state: State = State.IDLE
 var current_path: PackedVector2Array = []
 var path_index: int = 0
 var carried_props: Array[Node2D] = []
+var pushed_prop: Node2D = null
 var is_selected: bool = false
 
 # Planning phase: props this stagehand is assigned to (across any legs)
@@ -69,6 +70,8 @@ func _physics_process(delta: float) -> void:
 	match current_state:
 		State.MOVING, State.CARRYING:
 			_process_movement(delta)
+		State.PUSHING:
+			pass  # Prop drives position during push
 		State.IDLE, State.WAITING:
 			pass
 
@@ -100,13 +103,17 @@ func _process_movement(delta: float) -> void:
 	_facing_angle = lerp_angle(_facing_angle, target_angle, rotation_speed * delta)
 	queue_redraw()
 
-	# Move — slower when carrying, scaled by load
+	# Move — slower when carrying, scaled by load and trait modifiers
 	var speed: float = movement_speed
 	if speed_override > 0.0:
 		speed = speed_override
 	elif current_state == State.CARRYING and carried_props.size() > 0:
 		var load_ratio: float = float(get_carried_weight()) / float(strength)
 		speed *= lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
+
+	# Apply fragile trait speed modifier (minimum across all carried props)
+	if current_state == State.CARRYING:
+		speed *= get_carry_speed_modifier()
 
 	velocity = direction.normalized() * speed
 	move_and_slide()
@@ -265,6 +272,29 @@ func _reposition_carried_props() -> void:
 
 
 # =============================================================================
+# PUSH SUPPORT (wheeled props)
+# =============================================================================
+
+func start_pushing(prop: Node2D) -> void:
+	pushed_prop = prop
+	current_state = State.PUSHING
+
+
+func on_push_completed() -> void:
+	pushed_prop = null
+	current_state = State.IDLE
+	reached_destination.emit()
+
+
+func get_carry_speed_modifier() -> float:
+	var modifier: float = 1.0
+	for prop in carried_props:
+		if prop and prop.has_method("get_carry_speed_modifier"):
+			modifier = min(modifier, prop.get_carry_speed_modifier())
+	return modifier
+
+
+# =============================================================================
 # ASSIGNMENT TRACKING
 # =============================================================================
 
@@ -289,6 +319,7 @@ func reset_for_planning() -> void:
 	stop()
 	speed_override = 0.0
 	carried_props.clear()
+	pushed_prop = null
 	current_state = State.IDLE
 
 

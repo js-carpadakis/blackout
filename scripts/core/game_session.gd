@@ -118,16 +118,23 @@ func _spawn_test_entities() -> void:
 	_spawn_stagehand(StagehandRegularScene, _section_center(STAGE_RIGHT_2ND), Color.CORAL)
 	_spawn_stagehand(StagehandStrongScene, _section_center(STAGE_RIGHT_3RD), Color.DARK_RED)
 
-	# Prop definitions: [name, color, weight]
+	# Prop definitions: { name, weight, color, shape, size, traits }
 	var prop_defs: Array = [
-		["Chair", Color.SADDLE_BROWN, 1],
-		["Stool", Color.NAVY_BLUE, 1],
-		["Dresser", Color.ANTIQUE_WHITE, 2],
-		["Couch", Color.FOREST_GREEN, 2],
-		["Piano", Color.DARK_RED, 3],
-		["Bookshelf", Color.PURPLE, 3],
+		{ "name": "Chair", "weight": 1, "color": Color.SADDLE_BROWN, "shape": 0, "size": Vector2(30, 30), "traits": [] },
+		{ "name": "Stool", "weight": 1, "color": Color.NAVY_BLUE, "shape": 1, "size": Vector2(28, 28), "traits": [] },
+		{ "name": "Lamp", "weight": 1, "color": Color.GOLDENROD, "shape": 0, "size": Vector2(20, 40), "traits": [0] },
+		{ "name": "Table", "weight": 2, "color": Color.BURLYWOOD, "shape": 1, "size": Vector2(50, 50), "traits": [] },
+		{ "name": "Couch", "weight": 2, "color": Color.FOREST_GREEN, "shape": 0, "size": Vector2(70, 35), "traits": [2] },
+		{ "name": "Dresser", "weight": 2, "color": Color.ANTIQUE_WHITE, "shape": 0, "size": Vector2(55, 40), "traits": [2] },
+		{ "name": "Rug", "weight": 2, "color": Color.CRIMSON, "shape": 0, "size": Vector2(80, 15), "traits": [] },
+		{ "name": "Piano", "weight": 3, "color": Color.DARK_RED, "shape": 2, "size": Vector2(70, 55), "traits": [0] },
+		{ "name": "Bookshelf", "weight": 3, "color": Color.PURPLE, "shape": 0, "size": Vector2(35, 70), "traits": [] },
+		{ "name": "Wardrobe", "weight": 3, "color": Color.DARK_OLIVE_GREEN, "shape": 0, "size": Vector2(50, 65), "traits": [1] },
+		{ "name": "Statue", "weight": 2, "color": Color.SLATE_GRAY, "shape": 1, "size": Vector2(35, 35), "traits": [0, 1] },
+		{ "name": "Bed", "weight": 3, "color": Color.MEDIUM_PURPLE, "shape": 0, "size": Vector2(75, 55), "traits": [2] },
 	]
 	prop_defs.shuffle()
+	prop_defs.resize(6)
 
 	# All wing sections to distribute props into
 	var wing_sections: Array[Rect2] = [
@@ -136,11 +143,11 @@ func _spawn_test_entities() -> void:
 	]
 
 	for i in range(prop_defs.size()):
-		var def: Array = prop_defs[i]
+		var def: Dictionary = prop_defs[i]
 		var section: Rect2 = wing_sections[i]
 		var spawn_pos: Vector2 = _random_point_in_rect(section)
 		var target_pos: Vector2 = _random_stage_target_ellipse()
-		_spawn_prop(spawn_pos, target_pos, def[1], def[0], def[2])
+		_spawn_prop(spawn_pos, target_pos, def.color, def.name, def.weight, def.shape, def.size, def.traits)
 
 
 func _spawn_stagehand(scene: PackedScene, pos: Vector2, color: Color) -> void:
@@ -154,11 +161,18 @@ func _spawn_stagehand(scene: PackedScene, pos: Vector2, color: Color) -> void:
 	stagehands.append(stagehand)
 
 
-func _spawn_prop(pos: Vector2, target: Vector2, color: Color, prop_name: String, weight: int = 1) -> void:
+func _spawn_prop(pos: Vector2, target: Vector2, color: Color, prop_name: String, weight: int = 1, shape_id: int = 0, size: Vector2 = Vector2.ZERO, prop_traits: Array = []) -> void:
 	var prop: StaticBody2D = PropScene.instantiate() as StaticBody2D
 	prop.prop_name = prop_name
 	prop.prop_color = color
 	prop.weight = weight
+	prop.shape = shape_id
+	if size != Vector2.ZERO:
+		prop.size_override = size
+	var typed_traits: Array[int] = []
+	for t in prop_traits:
+		typed_traits.append(t as int)
+	prop.traits = typed_traits
 	prop.global_position = pos
 	props_container.add_child(prop)
 	props.append(prop)
@@ -187,6 +201,10 @@ func _planning_input(event: InputEvent) -> void:
 				_planning_handle_release()
 		elif event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 			_planning_handle_right_click(get_global_mouse_position())
+		elif event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
+			_rotate_hovered_ghost(get_global_mouse_position(), deg_to_rad(15))
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
+			_rotate_hovered_ghost(get_global_mouse_position(), deg_to_rad(-15))
 
 	elif event is InputEventMouseMotion and (_dragging_entity or _dragging_target_prop):
 		_planning_handle_drag(get_global_mouse_position())
@@ -237,7 +255,7 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 				if prop.movement_plan[i].has("destination"):
 					prop.movement_plan[i].destination = ghost_pos
 					break
-			prop.set_target(ghost_pos)
+			prop.set_target(ghost_pos, prop.target_rotation)
 		path_preview.invalidate(true)
 		return
 
@@ -262,6 +280,17 @@ func _planning_handle_release() -> void:
 	_dragging_entity = null
 	_dragging_target_prop = null
 	_drag_offset = Vector2.ZERO
+
+
+func _rotate_hovered_ghost(world_pos: Vector2, angle_delta: float) -> void:
+	for prop in props:
+		if not prop._show_ghost:
+			continue
+		var radius: float = max(prop.prop_size.x, prop.prop_size.y) / 2.0
+		if world_pos.distance_to(prop.target_position) < radius + 10.0:
+			prop.target_rotation += angle_delta
+			prop.queue_redraw()
+			return
 
 
 func _is_dragging_affects_selected_path() -> bool:
@@ -456,10 +485,12 @@ func _end_execution() -> void:
 # =============================================================================
 
 func _is_stagehand_busy(sh: CharacterBody2D) -> bool:
-	## A stagehand is busy if they are moving, carrying, or have carried props.
+	## A stagehand is busy if they are moving, carrying, pushing, or have carried props.
 	if sh.current_state == StagehandController.State.CARRYING:
 		return true
 	if sh.current_state == StagehandController.State.MOVING:
+		return true
+	if sh.current_state == StagehandController.State.PUSHING:
 		return true
 	if sh.carried_props.size() > 0:
 		return true
@@ -531,6 +562,19 @@ func _do_pickup(prop: StaticBody2D) -> void:
 	var leg: Dictionary = prop.get_current_leg()
 	var leg_stagehands: Array = leg.stagehands
 
+	# Wheeled props are pushed, not carried
+	if prop.is_wheeled():
+		var sh: CharacterBody2D = leg_stagehands[0]
+		var push_speed: float = sh.movement_speed * 0.6
+		sh.start_pushing(prop)
+		prop.begin_push(sh, leg.destination, push_speed)
+
+		# Reuse CARRYING phase for tracking
+		_prop_execution[prop].phase = LegPhase.CARRYING
+		_prop_execution[prop].arrived = []
+		_prop_execution[prop].dispatched = [sh]
+		return
+
 	if leg_stagehands.size() == 1:
 		# Solo carry
 		var sh: CharacterBody2D = leg_stagehands[0]
@@ -553,6 +597,8 @@ func _do_pickup(prop: StaticBody2D) -> void:
 		# Sync speed across all stagehands in the group
 		var load_ratio: float = float(prop.weight) / float(lead.strength)
 		var group_speed: float = lead.movement_speed * lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
+		# Apply fragile speed modifier to group speed
+		group_speed *= prop.get_carry_speed_modifier()
 		for sh in leg_stagehands:
 			sh.speed_override = group_speed
 
@@ -594,11 +640,18 @@ func _do_dropoff(prop: StaticBody2D, stagehand: CharacterBody2D) -> void:
 		return
 	_prop_execution[prop].phase = LegPhase.DONE
 
-	# Lead drops the prop
+	# Lead drops the prop (or for wheeled props, just mark as placed)
+	var is_final_leg: bool = prop.current_leg_index >= prop.get_leg_count() - 1
 	if lead.is_carrying(prop):
 		var dropped: Node2D = lead.put_down_prop(prop, props_container)
 		if dropped:
+			# Set rotation to target on the final leg
+			if is_final_leg:
+				dropped.rotation = prop.target_rotation
 			dropped.on_put_down(dropped.global_position)
+	elif prop.current_state == prop.PropState.PLACED or prop.current_state == prop.PropState.IN_POSITION:
+		# Wheeled push already placed the prop — just emit for tracking
+		prop.on_put_down(prop.global_position)
 
 	# Clear all carriers and speed overrides
 	for sh in leg_stagehands:
@@ -811,7 +864,7 @@ func _check_execution_end_condition() -> void:
 	for sh in stagehands:
 		if sh == _clear_zone_left_stagehand or sh == _clear_zone_right_stagehand:
 			continue
-		if sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.CARRYING:
+		if sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.CARRYING or sh.current_state == StagehandController.State.PUSHING:
 			return
 	_end_execution()
 
