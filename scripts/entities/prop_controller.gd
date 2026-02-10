@@ -32,6 +32,7 @@ enum PushPhase { ROTATING, SLIDING, FINAL_ROTATING }
 var _push_phase: PushPhase = PushPhase.ROTATING
 var _push_speed: float = 90.0
 var _push_rotation_speed: float = 2.0  # rad/s
+var _push_paused: bool = false
 var target_position: Vector2:
 	get:
 		if movement_plan.size() > 0:
@@ -94,8 +95,8 @@ func _process(delta: float) -> void:
 	if _show_ghost and (current_state == PropState.BEING_CARRIED or current_state == PropState.BEING_PUSHED or is_being_dragged):
 		queue_redraw()
 
-	# Drive push animation
-	if current_state == PropState.BEING_PUSHED:
+	# Drive push animation (skip when paused)
+	if current_state == PropState.BEING_PUSHED and not _push_paused:
 		match _push_phase:
 			PushPhase.ROTATING:
 				_process_push_rotate(delta)

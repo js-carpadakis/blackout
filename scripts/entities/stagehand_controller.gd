@@ -22,6 +22,10 @@ var carried_props: Array[Node2D] = []
 var pushed_prop: Node2D = null
 var is_selected: bool = false
 
+# Home position: where this stagehand returns after tasks. Set at spawn.
+var home_position: Vector2 = Vector2.ZERO
+var _return_override: Variant = null  # When set, overrides home_position for returns
+
 # Planning phase: props this stagehand is assigned to (across any legs)
 var assigned_props: Array[StaticBody2D] = []
 var has_assignment: bool:
@@ -314,6 +318,20 @@ func clear_assignment() -> void:
 	queue_redraw()
 
 
+func get_return_position() -> Vector2:
+	if _return_override != null:
+		return _return_override as Vector2
+	return home_position
+
+
+func set_return_override(pos: Vector2) -> void:
+	_return_override = pos
+
+
+func clear_return_override() -> void:
+	_return_override = null
+
+
 func reset_for_planning() -> void:
 	clear_assignment()
 	stop()
@@ -321,6 +339,7 @@ func reset_for_planning() -> void:
 	carried_props.clear()
 	pushed_prop = null
 	current_state = State.IDLE
+	_return_override = null
 
 
 func set_selected(value: bool) -> void:
