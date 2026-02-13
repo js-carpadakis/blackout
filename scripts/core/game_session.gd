@@ -23,35 +23,43 @@ var props: Array[StaticBody2D] = []
 
 # Cell size in pixels (must match grid_system and pathfinding)
 var _cell_size: float = 50.0
-var _grid_size: Vector2i = Vector2i(32, 20)
+var _grid_size: Vector2i = Vector2i(36, 17)
 
-# Half-ellipse stage shape: flat edge at bottom (backstage), curve at top (audience)
-# Center of full ellipse at (0, 500), semi-axis x=800, semi-axis y=1000
-# Grid covers [-800, 800] x [-500, 500]
-const ELLIPSE_CENTER_Y := 500.0
-const ELLIPSE_A := 800.0   # semi-axis x (half of 1600)
-const ELLIPSE_B := 1000.0  # semi-axis y (full 1000 depth)
+# Rectangular proscenium theater layout
+# Main stage: 1300 wide centered, 600 deep (visible to audience)
+const STAGE_RECT := Rect2(-650, -500, 1300, 600)
 
-# Wing sections: 400px wide, 600px tall (3 sections of 200px), outside the ellipse
-const WING_WIDTH := 400.0
-const WING_SECTION_HEIGHT := 200.0
+# Proscenium wall at Y=-500 (front of stage)
+const PROSCENIUM_Y := -500.0
 
-# Stage left wing sections (1st=closest to audience/top, 3rd=deepest backstage/bottom)
-const STAGE_LEFT_1ST := Rect2(-1000, -100, 400, 200)
-const STAGE_LEFT_2ND := Rect2(-1000, 100, 400, 200)
-const STAGE_LEFT_3RD := Rect2(-1000, 300, 400, 200)
+# Apron/forestage: half-ellipse extending past the proscenium opening toward the audience
+# Curves outward only across the proscenium opening, flat at the sides where the wall exists
+const APRON_A := 650.0   # semi-axis x (half of proscenium opening width)
+const APRON_B := 200.0   # semi-axis y (max depth at center)
+const APRON_CENTER_Y := -500.0  # flat edge at proscenium line
+
+# Wing sections: 250px wide, 600px tall (4 sections of 150px)
+const WING_WIDTH := 250.0
+const WING_SECTION_HEIGHT := 150.0
+
+# Stage left wing sections (1st=closest to audience/top, 4th=deepest/bottom)
+const STAGE_LEFT_1ST := Rect2(-900, -500, 250, 150)
+const STAGE_LEFT_2ND := Rect2(-900, -350, 250, 150)
+const STAGE_LEFT_3RD := Rect2(-900, -200, 250, 150)
+const STAGE_LEFT_4TH := Rect2(-900, -50, 250, 150)
 
 # Stage right wing sections
-const STAGE_RIGHT_1ST := Rect2(600, -100, 400, 200)
-const STAGE_RIGHT_2ND := Rect2(600, 100, 400, 200)
-const STAGE_RIGHT_3RD := Rect2(600, 300, 400, 200)
+const STAGE_RIGHT_1ST := Rect2(650, -500, 250, 150)
+const STAGE_RIGHT_2ND := Rect2(650, -350, 250, 150)
+const STAGE_RIGHT_3RD := Rect2(650, -200, 250, 150)
+const STAGE_RIGHT_4TH := Rect2(650, -50, 250, 150)
 
-# Full wing bounds (union of all 3 sections per side)
-const STAGE_LEFT_RECT := Rect2(-1000, -100, 400, 600)
-const STAGE_RIGHT_RECT := Rect2(600, -100, 400, 600)
+# Full wing bounds (union of all 4 sections per side)
+const STAGE_LEFT_RECT := Rect2(-900, -500, 250, 600)
+const STAGE_RIGHT_RECT := Rect2(650, -500, 250, 600)
 
-# Backstage: 2000x600 rectangle overlapping wings and bottom of stage
-const BACKSTAGE_RECT := Rect2(-1000, -100, 2000, 600)
+# World bounds: entire walkable area for drag clamping (includes apron)
+const WORLD_BOUNDS := Rect2(-900, -700, 1800, 800)
 
 # Phase state
 var _is_planning: bool = true
@@ -73,17 +81,16 @@ var _execution_paused: bool = false
 
 
 func _ready() -> void:
-	# Initialize pathfinding with larger grid for half-ellipse stage
+	# Initialize pathfinding grid covering entire walkable area
 	pathfinding.initialize(_grid_size, _cell_size)
 	_mark_stage_bounds()
 
-	# Configure grid overlay with ellipse shape
-	grid_overlay.set_stage_ellipse(ELLIPSE_CENTER_Y, ELLIPSE_A, ELLIPSE_B)
+	# Configure grid overlay with stage rect
+	grid_overlay.set_stage_rect(STAGE_RECT)
 	grid_overlay.set_grid_visible(false)
 
 	# Fit camera to show entire playable area, reserving space for HUD panel
-	# Playable area: wings + stage ellipse, x [-1000, 1000], y [-500, 500]
-	var stage_bounds := Rect2(-1000, -500, 2000, 1000)
+	var stage_bounds := WORLD_BOUNDS
 	camera.fit_to_stage(stage_bounds, 260.0)  # 250px panel + 10px gap
 
 	# Connect HUD
@@ -114,33 +121,33 @@ func _spawn_test_entities() -> void:
 
 	# Prop definitions: { name, weight, color, shape, size, traits }
 	var prop_defs: Array = [
-		{ "name": "Chair", "weight": 1, "color": Color.SADDLE_BROWN, "shape": 0, "size": Vector2(30, 30), "traits": [] },
-		{ "name": "Stool", "weight": 1, "color": Color.NAVY_BLUE, "shape": 1, "size": Vector2(28, 28), "traits": [] },
-		{ "name": "Lamp", "weight": 1, "color": Color.GOLDENROD, "shape": 0, "size": Vector2(20, 40), "traits": [0] },
-		{ "name": "Table", "weight": 2, "color": Color.BURLYWOOD, "shape": 1, "size": Vector2(50, 50), "traits": [] },
-		{ "name": "Couch", "weight": 2, "color": Color.FOREST_GREEN, "shape": 0, "size": Vector2(70, 35), "traits": [2] },
-		{ "name": "Dresser", "weight": 2, "color": Color.ANTIQUE_WHITE, "shape": 0, "size": Vector2(55, 40), "traits": [2] },
-		{ "name": "Rug", "weight": 2, "color": Color.CRIMSON, "shape": 0, "size": Vector2(80, 15), "traits": [] },
-		{ "name": "Piano", "weight": 3, "color": Color.DARK_RED, "shape": 2, "size": Vector2(70, 55), "traits": [0] },
-		{ "name": "Bookshelf", "weight": 3, "color": Color.PURPLE, "shape": 0, "size": Vector2(35, 70), "traits": [] },
-		{ "name": "Wardrobe", "weight": 3, "color": Color.DARK_OLIVE_GREEN, "shape": 0, "size": Vector2(50, 65), "traits": [1] },
-		{ "name": "Statue", "weight": 2, "color": Color.SLATE_GRAY, "shape": 1, "size": Vector2(35, 35), "traits": [0, 1] },
-		{ "name": "Bed", "weight": 3, "color": Color.MEDIUM_PURPLE, "shape": 0, "size": Vector2(75, 55), "traits": [2] },
+		{ "name": "Chair", "weight": 1, "color": Color.SADDLE_BROWN, "shape": 0, "size": Vector2(45, 45), "traits": [] },
+		{ "name": "Stool", "weight": 1, "color": Color.NAVY_BLUE, "shape": 1, "size": Vector2(42, 42), "traits": [] },
+		{ "name": "Lamp", "weight": 1, "color": Color.GOLDENROD, "shape": 0, "size": Vector2(30, 60), "traits": [0] },
+		{ "name": "Table", "weight": 2, "color": Color.BURLYWOOD, "shape": 1, "size": Vector2(75, 75), "traits": [] },
+		{ "name": "Couch", "weight": 2, "color": Color.FOREST_GREEN, "shape": 0, "size": Vector2(105, 52), "traits": [2] },
+		{ "name": "Dresser", "weight": 2, "color": Color.ANTIQUE_WHITE, "shape": 0, "size": Vector2(82, 60), "traits": [2] },
+		{ "name": "Rug", "weight": 2, "color": Color.CRIMSON, "shape": 0, "size": Vector2(120, 22), "traits": [] },
+		{ "name": "Piano", "weight": 3, "color": Color.DARK_RED, "shape": 2, "size": Vector2(105, 82), "traits": [0] },
+		{ "name": "Bookshelf", "weight": 3, "color": Color.PURPLE, "shape": 0, "size": Vector2(52, 105), "traits": [] },
+		{ "name": "Wardrobe", "weight": 3, "color": Color.DARK_OLIVE_GREEN, "shape": 0, "size": Vector2(75, 98), "traits": [1] },
+		{ "name": "Statue", "weight": 2, "color": Color.SLATE_GRAY, "shape": 1, "size": Vector2(52, 52), "traits": [0, 1] },
+		{ "name": "Bed", "weight": 3, "color": Color.MEDIUM_PURPLE, "shape": 0, "size": Vector2(112, 82), "traits": [2] },
 	]
 	prop_defs.shuffle()
 	prop_defs.resize(6)
 
 	# All wing sections to distribute props into
 	var wing_sections: Array[Rect2] = [
-		STAGE_LEFT_1ST, STAGE_LEFT_2ND, STAGE_LEFT_3RD,
-		STAGE_RIGHT_1ST, STAGE_RIGHT_2ND, STAGE_RIGHT_3RD,
+		STAGE_LEFT_1ST, STAGE_LEFT_2ND, STAGE_LEFT_3RD, STAGE_LEFT_4TH,
+		STAGE_RIGHT_1ST, STAGE_RIGHT_2ND, STAGE_RIGHT_3RD, STAGE_RIGHT_4TH,
 	]
 
 	for i in range(prop_defs.size()):
 		var def: Dictionary = prop_defs[i]
 		var section: Rect2 = wing_sections[i]
 		var spawn_pos: Vector2 = _random_point_in_rect(section)
-		var target_pos: Vector2 = _random_stage_target_ellipse()
+		var target_pos: Vector2 = _random_stage_target()
 		_spawn_prop(spawn_pos, target_pos, def.color, def.name, def.weight, def.shape, def.size, def.traits)
 
 
@@ -250,10 +257,10 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 
 
 func _planning_handle_drag(world_pos: Vector2) -> void:
-	# Dragging a target ghost — constrain to stage
+	# Dragging a target ghost — constrain to walkable area (stage, wings, apron)
 	if _dragging_target_prop:
 		var ghost_pos: Vector2 = world_pos + _drag_offset
-		if is_on_stage(ghost_pos):
+		if is_walkable(ghost_pos):
 			# Update the last leg's destination (the one the ghost represents)
 			var prop: StaticBody2D = _dragging_target_prop
 			for i in range(prop.movement_plan.size() - 1, -1, -1):
@@ -269,9 +276,9 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 
 	var target_pos: Vector2 = world_pos + _drag_offset
 
-	# Clamp to backstage area
-	target_pos.x = clamp(target_pos.x, BACKSTAGE_RECT.position.x, BACKSTAGE_RECT.position.x + BACKSTAGE_RECT.size.x)
-	target_pos.y = clamp(target_pos.y, BACKSTAGE_RECT.position.y, BACKSTAGE_RECT.position.y + BACKSTAGE_RECT.size.y)
+	# Clamp to world bounds (stage + wings + apron)
+	target_pos.x = clamp(target_pos.x, WORLD_BOUNDS.position.x, WORLD_BOUNDS.position.x + WORLD_BOUNDS.size.x)
+	target_pos.y = clamp(target_pos.y, WORLD_BOUNDS.position.y, WORLD_BOUNDS.position.y + WORLD_BOUNDS.size.y)
 
 	_dragging_entity.global_position = target_pos
 
@@ -320,8 +327,8 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 			_toggle_stagehand_on_prop(selected_stagehand, prop)
 			return
 
-	# Right-click on stage floor — set destination for the next incomplete leg (one at a time)
-	if selected_stagehand.has_assignment and is_on_stage(world_pos):
+	# Right-click on walkable floor — set destination for the next incomplete leg (one at a time)
+	if selected_stagehand.has_assignment and is_walkable(world_pos):
 		for prop in selected_stagehand.assigned_props:
 			var leg_idx: int = prop.find_incomplete_leg_with_stagehand(selected_stagehand)
 			if leg_idx >= 0:
@@ -333,8 +340,8 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 				return
 		return
 
-	# Right-click in backstage — reposition stagehand directly
-	if is_in_backstage(world_pos):
+	# Right-click in wings — reposition stagehand directly
+	if not is_on_stage(world_pos) and is_walkable(world_pos):
 		selected_stagehand.global_position = world_pos
 
 
@@ -948,30 +955,28 @@ func _random_point_in_rect(rect: Rect2) -> Vector2:
 	)
 
 
-func _random_stage_target_ellipse() -> Vector2:
+func _random_stage_target() -> Vector2:
 	var margin := 50.0
-	for attempt in range(100):
-		var x: float = randf_range(-ELLIPSE_A + margin, ELLIPSE_A - margin)
-		var y: float = randf_range(ELLIPSE_CENTER_Y - ELLIPSE_B + margin, ELLIPSE_CENTER_Y - margin)
-		if is_on_stage(Vector2(x, y)):
-			return Vector2(x, y)
-	return Vector2(0, 0)
+	return Vector2(
+		randf_range(STAGE_RECT.position.x + margin, STAGE_RECT.position.x + STAGE_RECT.size.x - margin),
+		randf_range(STAGE_RECT.position.y + margin, STAGE_RECT.position.y + STAGE_RECT.size.y - margin)
+	)
 
 
 static func is_on_stage(world_pos: Vector2) -> bool:
-	if world_pos.y > ELLIPSE_CENTER_Y:
+	return STAGE_RECT.has_point(world_pos)
+
+
+static func is_on_apron(world_pos: Vector2) -> bool:
+	if world_pos.y > APRON_CENTER_Y or world_pos.y < APRON_CENTER_Y - APRON_B:
 		return false
-	var nx: float = world_pos.x / ELLIPSE_A
-	var ny: float = (world_pos.y - ELLIPSE_CENTER_Y) / ELLIPSE_B
+	var nx: float = world_pos.x / APRON_A
+	var ny: float = (world_pos.y - APRON_CENTER_Y) / APRON_B
 	return (nx * nx + ny * ny) <= 1.0
 
 
-static func is_in_backstage(world_pos: Vector2) -> bool:
-	return BACKSTAGE_RECT.has_point(world_pos)
-
-
 static func is_walkable(world_pos: Vector2) -> bool:
-	return is_on_stage(world_pos) or is_in_backstage(world_pos)
+	return is_on_stage(world_pos) or is_on_apron(world_pos) or STAGE_LEFT_RECT.has_point(world_pos) or STAGE_RIGHT_RECT.has_point(world_pos)
 
 
 func _mark_stage_bounds() -> void:

@@ -1,27 +1,23 @@
 extends Node2D
 ## Visual grid overlay for the stage floor
 
-@export var grid_size: Vector2i = Vector2i(32, 20)
+@export var grid_size: Vector2i = Vector2i(36, 17)
 @export var cell_size: float = 50.0
 @export var grid_color: Color = Color(0.5, 0.5, 0.5, 0.3)
 @export var grid_line_width: float = 1.0
 
 var _grid_visible: bool = true
-var _has_ellipse: bool = false
-var _ellipse_center_y: float = 0.0
-var _ellipse_a: float = 0.0
-var _ellipse_b: float = 0.0
+var _has_stage_rect: bool = false
+var _stage_rect: Rect2
 
 
 func _ready() -> void:
 	queue_redraw()
 
 
-func set_stage_ellipse(center_y: float, a: float, b: float) -> void:
-	_has_ellipse = true
-	_ellipse_center_y = center_y
-	_ellipse_a = a
-	_ellipse_b = b
+func set_stage_rect(rect: Rect2) -> void:
+	_has_stage_rect = true
+	_stage_rect = rect
 	queue_redraw()
 
 
@@ -31,11 +27,7 @@ func _draw() -> void:
 
 	var half_width: float = grid_size.x * cell_size / 2.0
 	var half_height: float = grid_size.y * cell_size / 2.0
-
-	if _has_ellipse:
-		_draw_ellipse_grid(half_width, half_height)
-	else:
-		_draw_rect_grid(half_width, half_height)
+	_draw_rect_grid(half_width, half_height)
 
 
 func _draw_rect_grid(half_width: float, half_height: float) -> void:
@@ -46,30 +38,6 @@ func _draw_rect_grid(half_width: float, half_height: float) -> void:
 	for i in range(grid_size.y + 1):
 		var y: float = -half_height + i * cell_size
 		draw_line(Vector2(-half_width, y), Vector2(half_width, y), grid_color, grid_line_width)
-
-
-func _draw_ellipse_grid(half_width: float, half_height: float) -> void:
-	# Draw grid cells only inside the half-ellipse
-	for gx in range(grid_size.x):
-		for gy in range(grid_size.y):
-			var cell_center: Vector2 = Vector2(
-				-half_width + (gx + 0.5) * cell_size,
-				-half_height + (gy + 0.5) * cell_size
-			)
-			if _is_in_ellipse(cell_center):
-				var cell_rect := Rect2(
-					Vector2(-half_width + gx * cell_size, -half_height + gy * cell_size),
-					Vector2(cell_size, cell_size)
-				)
-				draw_rect(cell_rect, grid_color, false, grid_line_width)
-
-
-func _is_in_ellipse(world_pos: Vector2) -> bool:
-	if world_pos.y > _ellipse_center_y:
-		return false
-	var nx: float = world_pos.x / _ellipse_a
-	var ny: float = (world_pos.y - _ellipse_center_y) / _ellipse_b
-	return (nx * nx + ny * ny) <= 1.0
 
 
 func world_to_grid(world_pos: Vector2) -> Vector2i:
