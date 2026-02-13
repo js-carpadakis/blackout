@@ -94,8 +94,6 @@ func _ready() -> void:
 	camera.fit_to_stage(stage_bounds, 260.0)  # 250px panel + 10px gap
 
 	# Connect HUD
-	planning_hud.add_leg_pressed.connect(_on_add_leg_pressed)
-
 	# Start in planning phase
 	GameManager.change_state(GameManager.GameState.PLAYING)
 	GameManager.change_phase(GameManager.Phase.PLANNING)
@@ -366,26 +364,6 @@ func _toggle_stagehand_on_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -
 	_update_hud()
 	path_preview.invalidate(true)
 	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name, " leg ", active_leg + 1)
-
-
-func _on_add_leg_pressed() -> void:
-	# Add a new leg to the selected prop (or the first prop the selected stagehand is assigned to)
-	var prop: StaticBody2D = selected_prop
-	if not prop and selected_stagehand and selected_stagehand.assigned_props.size() > 0:
-		prop = selected_stagehand.assigned_props[0]
-
-	if not prop:
-		print("No prop selected for Add Leg")
-		return
-
-	# Only add a new leg if the current active leg already has a destination
-	if prop.get_active_leg_index() >= 0:
-		print("Current leg still needs a destination before adding another")
-		return
-
-	var leg_idx: int = prop.add_leg()
-	_update_hud()
-	print("Added leg ", leg_idx + 1, " to ", prop.prop_name)
 
 
 # --- EXECUTION PHASE INPUT ---
