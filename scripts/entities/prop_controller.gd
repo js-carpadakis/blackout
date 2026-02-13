@@ -15,7 +15,7 @@ enum PropTrait { FRAGILE, AWKWARD, WHEELED }
 @export var weight: int = 1  # Combined strength needed to carry
 @export var grid_footprint: Vector2i = Vector2i(1, 1)
 @export var prop_color: Color = Color.SADDLE_BROWN
-@export var prop_size: Vector2 = Vector2(40, 40)
+@export var prop_size: Vector2 = Vector2(60, 60)
 @export var shape: PropShape = PropShape.RECT
 @export var size_override: Vector2 = Vector2.ZERO  # When non-zero, skip weight-to-size auto-sizing
 
@@ -68,13 +68,13 @@ func _ready() -> void:
 	else:
 		match weight:
 			1:
-				prop_size = Vector2(30, 30)
+				prop_size = Vector2(45, 45)
 			2:
-				prop_size = Vector2(50, 50)
+				prop_size = Vector2(75, 75)
 			3:
-				prop_size = Vector2(70, 70)
+				prop_size = Vector2(105, 105)
 			_:
-				prop_size = Vector2(30 + weight * 15, 30 + weight * 15)
+				prop_size = Vector2(45 + weight * 22, 45 + weight * 22)
 
 	# Update collision shape size to match prop_size
 	var col_shape: CollisionShape2D = get_node_or_null("CollisionShape2D")
@@ -83,7 +83,7 @@ func _ready() -> void:
 
 	# Update navigation obstacle radius to match prop size
 	if _nav_obstacle:
-		_nav_obstacle.radius = max(prop_size.x, prop_size.y) / 2.0 + 5.0
+		_nav_obstacle.radius = max(prop_size.x, prop_size.y) / 2.0 + 8.0
 
 	queue_redraw()
 
