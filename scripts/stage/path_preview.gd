@@ -3,12 +3,10 @@ extends Node2D
 
 const PICKUP_LINE_WIDTH: float = 2.0
 const CARRY_LINE_WIDTH: float = 3.0
-const CLEAR_ZONE_LINE_WIDTH: float = 2.0
 const EXECUTION_LINE_WIDTH: float = 2.5
 const PICKUP_ALPHA: float = 0.5
 const CARRY_ALPHA: float = 0.8
 const EXECUTION_ALPHA: float = 0.7
-const CLEAR_ZONE_COLOR: Color = Color(0.9, 0.9, 0.6, 0.4)
 const DASH_LENGTH: float = 8.0
 const GAP_LENGTH: float = 6.0
 const WAYPOINT_RADIUS: float = 4.0
@@ -22,20 +20,12 @@ var _dirty: bool = false
 var _force_recompute: bool = false
 # Each entry: { "points": PackedVector2Array, "color": Color, "width": float, "dashed": bool, "end_marker": String }
 var _cached_paths: Array = []
-var _clear_zone_path: PackedVector2Array = []
 var _last_stagehand_pos: Vector2 = Vector2.ZERO
 var _last_prop_positions: Dictionary = {}
 
-var _clear_zone_left_stagehand: CharacterBody2D = null
-var _clear_zone_right_stagehand: CharacterBody2D = null
-var _clear_zone_left_center: Vector2 = Vector2.ZERO
-var _clear_zone_right_center: Vector2 = Vector2.ZERO
 
-
-func setup(pathfinding_node: Node, cz_left_center: Vector2, cz_right_center: Vector2) -> void:
+func setup(pathfinding_node: Node) -> void:
 	_pathfinding = pathfinding_node
-	_clear_zone_left_center = cz_left_center
-	_clear_zone_right_center = cz_right_center
 
 
 func set_stagehand(stagehand: CharacterBody2D) -> void:
@@ -47,7 +37,6 @@ func set_stagehand(stagehand: CharacterBody2D) -> void:
 func clear() -> void:
 	_selected_stagehand = null
 	_cached_paths.clear()
-	_clear_zone_path = PackedVector2Array()
 	queue_redraw()
 
 
@@ -59,12 +48,6 @@ func set_execution_mode(is_exec: bool) -> void:
 	else:
 		_cached_paths.clear()
 		queue_redraw()
-
-
-func set_clear_zone_stagehands(left: CharacterBody2D, right: CharacterBody2D) -> void:
-	_clear_zone_left_stagehand = left
-	_clear_zone_right_stagehand = right
-	invalidate()
 
 
 func invalidate(force: bool = false) -> void:
@@ -92,7 +75,6 @@ func _recompute() -> void:
 
 	if not _selected_stagehand or not _pathfinding:
 		_cached_paths.clear()
-		_clear_zone_path = PackedVector2Array()
 		queue_redraw()
 		return
 
@@ -115,12 +97,8 @@ func _recompute() -> void:
 				return
 
 	_cached_paths.clear()
-	_clear_zone_path = PackedVector2Array()
 	_last_stagehand_pos = sh_pos
 	_last_prop_positions.clear()
-
-	# Track the last destination this stagehand will end up at (for clear zone pathing)
-	var last_endpoint: Vector2 = sh_pos
 
 	for prop in _selected_stagehand.assigned_props:
 		var prop_pos: Vector2 = prop.global_position
@@ -162,22 +140,8 @@ func _recompute() -> void:
 						"dashed": false,
 						"end_marker": "diamond",
 					})
-				last_endpoint = leg.destination
-
-	# Clear zone path — starts from last delivery destination, not stagehand position
-	var cz_target: Variant = _get_clear_zone_target()
-	if cz_target != null:
-		_clear_zone_path = _pathfinding.find_path(last_endpoint, cz_target as Vector2)
 
 	queue_redraw()
-
-
-func _get_clear_zone_target() -> Variant:
-	if _selected_stagehand == _clear_zone_left_stagehand:
-		return _clear_zone_left_center
-	if _selected_stagehand == _clear_zone_right_stagehand:
-		return _clear_zone_right_center
-	return null
 
 
 # =============================================================================
@@ -207,13 +171,6 @@ func _draw() -> void:
 					draw_arc(end_pos, WAYPOINT_RADIUS, 0, TAU, 16, path_data.color, 2.0)
 				"diamond":
 					_draw_diamond(end_pos, DESTINATION_DIAMOND_SIZE, path_data.color)
-
-	# Clear zone path
-	if _clear_zone_path.size() > 1:
-		_draw_dashed_polyline(_clear_zone_path, CLEAR_ZONE_COLOR, CLEAR_ZONE_LINE_WIDTH)
-		var cz_end: Vector2 = _clear_zone_path[_clear_zone_path.size() - 1]
-		var half: float = 4.0
-		draw_rect(Rect2(cz_end - Vector2(half, half), Vector2(half * 2, half * 2)), CLEAR_ZONE_COLOR, false, 2.0)
 
 
 func _draw_execution_path() -> void:

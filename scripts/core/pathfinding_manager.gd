@@ -48,7 +48,66 @@ func find_path(from_world: Vector2, to_world: Vector2) -> PackedVector2Array:
 	if result_path.size() > 0:
 		result_path[result_path.size() - 1] = to_world
 
-	return result_path
+	return _smooth_path(result_path)
+
+
+func _smooth_path(path: PackedVector2Array) -> PackedVector2Array:
+	## Reduce turns by skipping waypoints when a straight line stays on walkable cells.
+	if path.size() <= 2:
+		return path
+
+	var smoothed := PackedVector2Array()
+	smoothed.append(path[0])
+	var anchor: int = 0
+
+	while anchor < path.size() - 1:
+		var farthest: int = anchor + 1
+		# Scan backwards from end to find farthest reachable point
+		for i in range(path.size() - 1, anchor + 1, -1):
+			if _walkable_line(path[anchor], path[i]):
+				farthest = i
+				break
+		smoothed.append(path[farthest])
+		anchor = farthest
+
+	return smoothed
+
+
+func _walkable_line(from_pos: Vector2, to_pos: Vector2) -> bool:
+	## Check if a straight line between two world positions stays on walkable cells.
+	var from_cell: Vector2i = world_to_cell(from_pos)
+	var to_cell: Vector2i = world_to_cell(to_pos)
+	if from_cell == to_cell:
+		return true
+
+	# Walk all cells the line passes through (supercover / grid traversal)
+	var dx: int = abs(to_cell.x - from_cell.x)
+	var dy: int = abs(to_cell.y - from_cell.y)
+	var sx: int = 1 if from_cell.x < to_cell.x else -1
+	var sy: int = 1 if from_cell.y < to_cell.y else -1
+	var x: int = from_cell.x
+	var y: int = from_cell.y
+	var err: int = dx - dy
+
+	while true:
+		if is_cell_blocked(Vector2i(x, y)):
+			return false
+		if x == to_cell.x and y == to_cell.y:
+			break
+		var e2: int = 2 * err
+		# For supercover: when crossing a corner, also check the adjacent cells
+		if e2 > -dy and e2 < dx:
+			# Diagonal step — check both adjacent cells to prevent corner-cutting
+			if is_cell_blocked(Vector2i(x + sx, y)) and is_cell_blocked(Vector2i(x, y + sy)):
+				return false
+		if e2 > -dy:
+			err -= dy
+			x += sx
+		if e2 < dx:
+			err += dx
+			y += sy
+
+	return true
 
 
 func get_path_cells(from_cell: Vector2i, to_cell: Vector2i) -> PackedVector2Array:
