@@ -12,6 +12,15 @@ enum Phase { PLANNING, EXECUTION }
 var current_state: GameState = GameState.MENU
 var current_phase: Phase = Phase.PLANNING
 var current_level_id: int = 0
+var setup_config: Dictionary = {}
+
+
+func has_setup_config() -> bool:
+	return setup_config.has("assignments") and setup_config.assignments.size() > 0
+
+
+func clear_setup_config() -> void:
+	setup_config = {}
 
 
 func change_state(new_state: GameState) -> void:
