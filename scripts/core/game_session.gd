@@ -94,8 +94,6 @@ func _ready() -> void:
 	camera.fit_to_stage(stage_bounds, 260.0)  # 250px panel + 10px gap
 
 	# Connect HUD
-	planning_hud.add_leg_pressed.connect(_on_add_leg_pressed)
-
 	# Start in planning phase
 	GameManager.change_state(GameManager.GameState.PLAYING)
 	GameManager.change_phase(GameManager.Phase.PLANNING)
@@ -103,8 +101,12 @@ func _ready() -> void:
 	# Initialize path preview
 	path_preview.setup(pathfinding)
 
-	# Spawn initial stagehands for testing
-	_spawn_test_entities()
+	# Spawn entities from setup config or fallback to test entities
+	if GameManager.has_setup_config():
+		_spawn_from_config(GameManager.setup_config)
+		GameManager.clear_setup_config()
+	else:
+		_spawn_test_entities()
 	_update_hud()
 
 
@@ -149,6 +151,50 @@ func _spawn_test_entities() -> void:
 		var spawn_pos: Vector2 = _random_point_in_rect(section)
 		var target_pos: Vector2 = _random_stage_target()
 		_spawn_prop(spawn_pos, target_pos, def.color, def.name, def.weight, def.shape, def.size, def.traits)
+
+
+func _spawn_from_config(config: Dictionary) -> void:
+	var wing_sections: Array[Rect2] = [
+		STAGE_LEFT_1ST, STAGE_LEFT_2ND, STAGE_LEFT_3RD, STAGE_LEFT_4TH,
+		STAGE_RIGHT_1ST, STAGE_RIGHT_2ND, STAGE_RIGHT_3RD, STAGE_RIGHT_4TH,
+	]
+	var type_to_scene: Dictionary = {
+		"rookie": StagehandRookieScene,
+		"regular": StagehandRegularScene,
+		"strong": StagehandStrongScene,
+	}
+
+	# First pass: spawn unique stagehands (identified by color) at their prop's wing
+	var spawned_stagehands: Dictionary = {}  # Color -> CharacterBody2D
+	for assignment in config.assignments:
+		var section: Rect2 = wing_sections[assignment.wing_section]
+		for crew_member in assignment.crew:
+			if not spawned_stagehands.has(crew_member.color):
+				var scene: PackedScene = type_to_scene[crew_member.type]
+				_spawn_stagehand(scene, _section_center(section), crew_member.color)
+				spawned_stagehands[crew_member.color] = stagehands.back()
+
+	# Second pass: spawn props in their wing sections
+	var spawned_props: Array[StaticBody2D] = []
+	for assignment in config.assignments:
+		var section: Rect2 = wing_sections[assignment.wing_section]
+		var def: Dictionary = assignment.prop_def
+		var spawn_pos: Vector2 = _random_point_in_rect(section)
+		var target_pos: Vector2 = _random_stage_target()
+		_spawn_prop(spawn_pos, target_pos, def.color, def.name, def.weight, def.shape, def.size, def.traits)
+		spawned_props.append(props.back())
+
+	# Third pass: create pre-attached assignments
+	for i in range(config.assignments.size()):
+		var assignment: Dictionary = config.assignments[i]
+		if assignment.crew.is_empty():
+			continue
+		var prop: StaticBody2D = spawned_props[i]
+		var leg_idx: int = prop.add_leg()
+		for crew_member in assignment.crew:
+			var stagehand: CharacterBody2D = spawned_stagehands[crew_member.color]
+			prop.add_stagehand_to_leg(leg_idx, stagehand)
+			stagehand.add_assigned_prop(prop)
 
 
 func _spawn_stagehand(scene: PackedScene, pos: Vector2, color: Color) -> void:
@@ -250,6 +296,16 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 			prop.is_being_dragged = true
 			_drag_offset = prop.global_position - world_pos
 			_select_prop(prop)
+			return
+
+	# If a prop is selected and clicked on stage, set its target destination
+	if selected_prop and is_on_stage(world_pos):
+		var leg_idx: int = selected_prop.get_active_leg_index()
+		if leg_idx >= 0:
+			selected_prop.movement_plan[leg_idx]["destination"] = world_pos
+			selected_prop.set_target(world_pos)
+			_update_hud()
+			path_preview.invalidate(true)
 			return
 
 	# Clicked on nothing — deselect
@@ -366,26 +422,6 @@ func _toggle_stagehand_on_prop(stagehand: CharacterBody2D, prop: StaticBody2D) -
 	_update_hud()
 	path_preview.invalidate(true)
 	print("Assigned ", stagehand.stagehand_name, " -> ", prop.prop_name, " leg ", active_leg + 1)
-
-
-func _on_add_leg_pressed() -> void:
-	# Add a new leg to the selected prop (or the first prop the selected stagehand is assigned to)
-	var prop: StaticBody2D = selected_prop
-	if not prop and selected_stagehand and selected_stagehand.assigned_props.size() > 0:
-		prop = selected_stagehand.assigned_props[0]
-
-	if not prop:
-		print("No prop selected for Add Leg")
-		return
-
-	# Only add a new leg if the current active leg already has a destination
-	if prop.get_active_leg_index() >= 0:
-		print("Current leg still needs a destination before adding another")
-		return
-
-	var leg_idx: int = prop.add_leg()
-	_update_hud()
-	print("Added leg ", leg_idx + 1, " to ", prop.prop_name)
 
 
 # --- EXECUTION PHASE INPUT ---

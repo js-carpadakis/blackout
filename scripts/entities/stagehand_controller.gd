@@ -8,8 +8,11 @@ signal selected(stagehand: CharacterBody2D)
 
 enum State { IDLE, MOVING, PICKING_UP, CARRYING, PUTTING_DOWN, WAITING, PUSHING }
 
-@export var movement_speed: float = 150.0
+@export var movement_speed: float = 300.0
 @export var rotation_speed: float = 10.0
+@export var acceleration: float = 1200.0   # Units/sec^2 when speeding up
+@export var deceleration: float = 800.0    # Units/sec^2 when slowing down
+var _current_speed: float = 0.0
 @export var stagehand_color: Color = Color.BLUE
 @export var stagehand_radius: float = 15.0
 @export var strength: int = 1  # Weight capacity - how heavy a prop this stagehand can carry
@@ -82,6 +85,7 @@ func _physics_process(delta: float) -> void:
 
 func _process_movement(delta: float) -> void:
 	if current_path.is_empty() or path_index >= current_path.size():
+		_current_speed = 0.0
 		_arrive_at_destination()
 		return
 
@@ -97,6 +101,7 @@ func _process_movement(delta: float) -> void:
 			# Stop so cone tip is at target (center is behind by tip_offset)
 			var offset_dir: Vector2 = direction.normalized() if direction.length() > 0.1 else Vector2.RIGHT.rotated(_facing_angle)
 			global_position = target - offset_dir * tip_offset
+			_current_speed = 0.0
 			_arrive_at_destination()
 		else:
 			path_index += 1
@@ -107,19 +112,32 @@ func _process_movement(delta: float) -> void:
 	_facing_angle = lerp_angle(_facing_angle, target_angle, rotation_speed * delta)
 	queue_redraw()
 
-	# Move — slower when carrying, scaled by load and trait modifiers
-	var speed: float = movement_speed
+	# Calculate target speed — slower when carrying, scaled by load and trait modifiers
+	var target_speed: float = movement_speed
 	if speed_override > 0.0:
-		speed = speed_override
+		target_speed = speed_override
 	elif current_state == State.CARRYING and carried_props.size() > 0:
 		var load_ratio: float = float(get_carried_weight()) / float(strength)
-		speed *= lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
+		target_speed *= lerpf(0.9, 0.5, clampf(load_ratio, 0.0, 1.0))
 
 	# Apply fragile trait speed modifier (minimum across all carried props)
 	if current_state == State.CARRYING:
-		speed *= get_carry_speed_modifier()
+		target_speed *= get_carry_speed_modifier()
 
-	velocity = direction.normalized() * speed
+	# Decelerate when approaching final destination
+	if is_final_waypoint:
+		var remaining_dist: float = direction.length()
+		# v^2 = 2*a*d → max speed to stop in remaining distance
+		var braking_speed: float = sqrt(2.0 * deceleration * remaining_dist)
+		target_speed = min(target_speed, braking_speed)
+
+	# Accelerate or decelerate toward target speed
+	if _current_speed < target_speed:
+		_current_speed = min(_current_speed + acceleration * delta, target_speed)
+	else:
+		_current_speed = max(_current_speed - deceleration * delta, target_speed)
+
+	velocity = direction.normalized() * _current_speed
 	move_and_slide()
 
 
@@ -180,6 +198,7 @@ func stop() -> void:
 	current_path.clear()
 	path_index = 0
 	velocity = Vector2.ZERO
+	_current_speed = 0.0
 	if current_state != State.CARRYING:
 		current_state = State.IDLE
 

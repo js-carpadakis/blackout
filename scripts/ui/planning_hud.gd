@@ -1,25 +1,16 @@
 extends CanvasLayer
 ## HUD for planning phase: shows current phase and prop movement plans
 
-signal add_leg_pressed
-
 @onready var phase_label: Label = $PhaseLabel
-@onready var add_leg_button: Button = $AddLegButton
 @onready var task_list: VBoxContainer = $TaskPanel/TaskList
 
 
 func _ready() -> void:
-	add_leg_button.pressed.connect(_on_add_leg_pressed)
 	set_phase("PLANNING")
-
-
-func _on_add_leg_pressed() -> void:
-	add_leg_pressed.emit()
 
 
 func set_phase(phase_name: String) -> void:
 	phase_label.text = phase_name
-	add_leg_button.visible = phase_name == "PLANNING"
 
 
 func update_task_list(all_props: Array[StaticBody2D]) -> void:

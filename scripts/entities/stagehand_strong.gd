@@ -5,5 +5,5 @@ class_name StagehandStrong
 func _init() -> void:
 	stagehand_name = "Strong"
 	strength = 3
-	movement_speed = 120.0
+	movement_speed = 240.0
 	stagehand_radius = 18.0
