@@ -135,6 +135,9 @@ func _spawn_test_entities() -> void:
 		{ "name": "Wardrobe", "weight": 3, "color": Color.DARK_OLIVE_GREEN, "shape": 0, "size": Vector2(75, 98), "traits": [1] },
 		{ "name": "Statue", "weight": 2, "color": Color.SLATE_GRAY, "shape": 1, "size": Vector2(52, 52), "traits": [0, 1] },
 		{ "name": "Bed", "weight": 3, "color": Color.MEDIUM_PURPLE, "shape": 0, "size": Vector2(112, 82), "traits": [2] },
+		{ "name": "Black Scrim", "weight": 1, "color": Color(0.1, 0.1, 0.1, 0.7), "shape": 0, "size": Vector2(60, 8), "traits": [3] },
+		{ "name": "White Drop", "weight": 1, "color": Color(0.9, 0.9, 0.85), "shape": 0, "size": Vector2(60, 8), "traits": [3] },
+		{ "name": "Forest Drop", "weight": 2, "color": Color.DARK_GREEN, "shape": 0, "size": Vector2(60, 8), "traits": [3] },
 	]
 	prop_defs.shuffle()
 	prop_defs.resize(6)
@@ -222,9 +225,14 @@ func _spawn_prop(pos: Vector2, target: Vector2, color: Color, prop_name: String,
 		typed_traits.append(t as int)
 	prop.traits = typed_traits
 	prop.global_position = pos
+	# Scrims are locked to their wing edge and have no stage destination
+	if prop.is_scrim():
+		prop._scrim_from_left = pos.x < 0.0
+		prop.global_position.x = -650.0 if prop._scrim_from_left else 650.0
 	props_container.add_child(prop)
 	props.append(prop)
-	prop.set_target(target)
+	if not prop.is_scrim():
+		prop.set_target(target)
 
 
 # =============================================================================
@@ -271,7 +279,7 @@ func _planning_input(event: InputEvent) -> void:
 func _planning_handle_click(world_pos: Vector2) -> void:
 	# Check if clicked on a target ghost — start dragging the target position
 	for prop in props:
-		if prop._show_ghost:
+		if prop._show_ghost and not prop.is_scrim():
 			var half_size: Vector2 = prop.prop_size / 2.0
 			var ghost_rect: Rect2 = Rect2(prop.target_position - half_size, prop.prop_size)
 			if ghost_rect.has_point(world_pos):
@@ -287,19 +295,20 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 			_drag_offset = stagehand.global_position - world_pos
 			return
 
-	# Check if clicked on prop — select prop and start drag
+	# Check if clicked on prop — select prop; scrims are selectable but not draggable
 	for prop in props:
 		var half_size: Vector2 = prop.prop_size / 2.0
 		var prop_rect: Rect2 = Rect2(prop.global_position - half_size, prop.prop_size)
 		if prop_rect.has_point(world_pos):
-			_dragging_entity = prop
-			prop.is_being_dragged = true
-			_drag_offset = prop.global_position - world_pos
+			if not prop.is_scrim():
+				_dragging_entity = prop
+				prop.is_being_dragged = true
+				_drag_offset = prop.global_position - world_pos
 			_select_prop(prop)
 			return
 
 	# If a prop is selected and clicked on stage, set its target destination
-	if selected_prop and is_on_stage(world_pos):
+	if selected_prop and not selected_prop.is_scrim() and is_on_stage(world_pos):
 		var leg_idx: int = selected_prop.get_active_leg_index()
 		if leg_idx >= 0:
 			selected_prop.movement_plan[leg_idx]["destination"] = world_pos
@@ -650,6 +659,19 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 func _do_pickup(prop: StaticBody2D) -> void:
 	var leg: Dictionary = prop.get_current_leg()
 	var leg_stagehands: Array = leg.stagehands
+
+	# Scrims are pulled across the stage from their wing side
+	if prop.is_scrim():
+		var sh: CharacterBody2D = leg_stagehands[0]
+		sh.start_pushing(prop)
+		# Determine pull direction based on which wing the prop is in
+		var from_left: bool = prop.global_position.x < 0.0
+		prop.begin_scrim_pull(sh, from_left)
+
+		_prop_execution[prop].phase = LegPhase.CARRYING
+		_prop_execution[prop].arrived = []
+		_prop_execution[prop].dispatched = [sh]
+		return
 
 	# Wheeled props are pushed, not carried
 	if prop.is_wheeled():

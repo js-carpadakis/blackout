@@ -16,6 +16,12 @@ const PROP_DEFS: Array[Dictionary] = [
 	{ "name": "Bed", "weight": 3, "color": Color.MEDIUM_PURPLE, "shape": 0, "size": Vector2(112, 82), "traits": [2] },
 ]
 
+const SCRIM_DEFS: Array[Dictionary] = [
+	{ "name": "Black Scrim", "weight": 1, "color": Color(0.1, 0.1, 0.1, 0.7), "shape": 0, "size": Vector2(60, 8), "traits": [3] },
+	{ "name": "White Drop", "weight": 1, "color": Color(0.9, 0.9, 0.85), "shape": 0, "size": Vector2(60, 8), "traits": [3] },
+	{ "name": "Forest Drop", "weight": 2, "color": Color.DARK_GREEN, "shape": 0, "size": Vector2(60, 8), "traits": [3] },
+]
+
 const STAGEHAND_DEFS: Array[Dictionary] = [
 	{ "type": "rookie", "name": "Rookie A", "color": Color.LIGHT_BLUE, "strength": 1, "speed": "Fast" },
 	{ "type": "regular", "name": "Regular A", "color": Color.BLUE, "strength": 2, "speed": "Med" },
@@ -26,7 +32,7 @@ const STAGEHAND_DEFS: Array[Dictionary] = [
 ]
 
 const WING_LABELS: Array[String] = ["L1", "L2", "L3", "L4", "R1", "R2", "R3", "R4"]
-const TRAIT_NAMES: Array[String] = ["Fragile", "Tall", "Wheeled"]
+const TRAIT_NAMES: Array[String] = ["Fragile", "Tall", "Wheeled", "Scrim"]
 
 @onready var assignment_list: VBoxContainer = $HBoxContainer/SidePanel/MarginContainer/VBoxContainer/ScrollContainer/AssignmentList
 @onready var stagehand_pool: VBoxContainer = $HBoxContainer/SidePanel/MarginContainer/VBoxContainer/StagehandPool
@@ -40,11 +46,15 @@ var _wing_buttons: Array[OptionButton] = []
 
 
 func _ready() -> void:
-	# Pick 6 random props
+	# Pick 5 random regular props
 	var all_props := PROP_DEFS.duplicate()
 	all_props.shuffle()
-	for i in range(6):
+	for i in range(5):
 		_selected_props.append(all_props[i])
+	# Pick 1 random scrim (always included, separate from prop pool)
+	var all_scrims := SCRIM_DEFS.duplicate()
+	all_scrims.shuffle()
+	_selected_props.append(all_scrims[0])
 
 	_build_stagehand_pool()
 	_build_assignment_cards()
@@ -74,8 +84,21 @@ func _build_assignment_cards() -> void:
 	_crew_toggles.clear()
 	_wing_buttons.clear()
 
+	var scrim_header_added := false
 	for i in range(_selected_props.size()):
 		var def: Dictionary = _selected_props[i]
+
+		# Insert a section header before the first scrim
+		if def.traits.has(3) and not scrim_header_added:
+			scrim_header_added = true
+			var section_sep := HSeparator.new()
+			assignment_list.add_child(section_sep)
+			var section_label := Label.new()
+			section_label.text = "Scrims"
+			section_label.add_theme_font_size_override("font_size", 13)
+			section_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+			section_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			assignment_list.add_child(section_label)
 
 		var card := VBoxContainer.new()
 		card.add_theme_constant_override("separation", 4)
