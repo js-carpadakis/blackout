@@ -9,7 +9,7 @@ signal plan_completed
 
 enum PropState { STORED, BEING_CARRIED, PLACED, IN_POSITION, BEING_PUSHED }
 enum PropShape { RECT, CIRCLE, L_SHAPE }
-enum PropTrait { FRAGILE, AWKWARD, WHEELED }
+enum PropTrait { FRAGILE, AWKWARD, WHEELED, SCRIM }
 
 @export var prop_name: String = "Prop"
 @export var weight: int = 1  # Combined strength needed to carry
@@ -33,6 +33,17 @@ var _push_phase: PushPhase = PushPhase.ROTATING
 var _push_speed: float = 90.0
 var _push_rotation_speed: float = 2.0  # rad/s
 var _push_paused: bool = false
+
+# Scrim pull state
+var _scrim_pulling: bool = false
+var _scrim_retracting: bool = false  # true while retracting before a re-pull
+var _scrim_progress: float = 0.0  # 0.0 to 1.0
+var _scrim_from_left: bool = true  # true = extends from left wing edge
+var _scrim_pull_speed: float = 400.0  # pixels/sec of leading edge
+var _scrim_y: float = 0.0  # Y center of the scrim
+var _scrim_full_width: float = 1300.0  # full stage width
+var _scrim_stagehand: CharacterBody2D = null
+
 var target_position: Vector2:
 	get:
 		if movement_plan.size() > 0:
@@ -97,16 +108,25 @@ func _process(delta: float) -> void:
 
 	# Drive push animation (skip when paused)
 	if current_state == PropState.BEING_PUSHED and not _push_paused:
-		match _push_phase:
-			PushPhase.ROTATING:
-				_process_push_rotate(delta)
-			PushPhase.SLIDING:
-				_process_push_slide(delta)
-			PushPhase.FINAL_ROTATING:
-				_process_push_final_rotate(delta)
+		if _scrim_pulling:
+			_process_scrim_pull(delta)
+		elif _scrim_retracting:
+			_process_scrim_retract(delta)
+		else:
+			match _push_phase:
+				PushPhase.ROTATING:
+					_process_push_rotate(delta)
+				PushPhase.SLIDING:
+					_process_push_slide(delta)
+				PushPhase.FINAL_ROTATING:
+					_process_push_final_rotate(delta)
 
 
 func _draw() -> void:
+	if is_scrim():
+		_draw_scrim()
+		return
+
 	# Draw target ghost at fixed world position with target rotation
 	if _show_ghost:
 		# Convert world offset to local draw coordinates (accounting for node rotation)
@@ -177,7 +197,10 @@ func is_at_target() -> bool:
 
 
 func check_target_reached() -> void:
-	if current_state == PropState.PLACED and is_at_target():
+	if current_state != PropState.PLACED:
+		return
+	# Scrims are always in position once fully pulled
+	if is_scrim() or is_at_target():
 		current_state = PropState.IN_POSITION
 		_show_ghost = false
 		queue_redraw()
@@ -195,7 +218,7 @@ func get_effective_weight() -> int:
 
 
 func get_required_strength() -> int:
-	if PropTrait.WHEELED in traits:
+	if PropTrait.WHEELED in traits or PropTrait.SCRIM in traits:
 		return 1
 	return get_effective_weight()
 
@@ -216,11 +239,17 @@ func get_trait_labels() -> PackedStringArray:
 				labels.append("awkward")
 			PropTrait.WHEELED:
 				labels.append("wheeled")
+			PropTrait.SCRIM:
+				labels.append("scrim")
 	return labels
 
 
 func is_wheeled() -> bool:
 	return PropTrait.WHEELED in traits
+
+
+func is_scrim() -> bool:
+	return PropTrait.SCRIM in traits
 
 
 # =============================================================================
@@ -386,6 +415,121 @@ func _finish_push() -> void:
 
 
 # =============================================================================
+# SCRIM PULL MECHANIC
+# =============================================================================
+
+func begin_scrim_pull(stagehand: CharacterBody2D, from_left: bool) -> void:
+	_scrim_stagehand = stagehand
+	_scrim_from_left = from_left
+	_scrim_y = global_position.y
+	current_state = PropState.BEING_PUSHED
+	if _nav_obstacle:
+		_nav_obstacle.avoidance_enabled = false
+	# Position the scrim at the source wing edge
+	if from_left:
+		global_position.x = -650.0
+	else:
+		global_position.x = 650.0
+	# If already extended, retract first before pulling back out
+	if _scrim_progress > 0.0:
+		_scrim_retracting = true
+		_scrim_pulling = false
+	else:
+		_scrim_retracting = false
+		_scrim_pulling = true
+	queue_redraw()
+
+
+func _process_scrim_pull(delta: float) -> void:
+	_scrim_progress += (_scrim_pull_speed / _scrim_full_width) * delta
+	if _scrim_progress >= 1.0:
+		_scrim_progress = 1.0
+		_finish_scrim_pull()
+	queue_redraw()
+
+
+func _process_scrim_retract(delta: float) -> void:
+	_scrim_progress -= (_scrim_pull_speed / _scrim_full_width) * delta
+	if _scrim_progress <= 0.0:
+		_scrim_progress = 0.0
+		_scrim_retracting = false
+		_finish_scrim_retract()
+	queue_redraw()
+
+
+func _finish_scrim_retract() -> void:
+	current_state = PropState.STORED
+	z_index = 0
+	if _nav_obstacle:
+		_nav_obstacle.avoidance_enabled = true
+	var stagehand := _scrim_stagehand
+	_scrim_stagehand = null
+	if stagehand:
+		stagehand.on_push_completed()
+
+
+func _finish_scrim_pull() -> void:
+	_scrim_pulling = false
+	current_state = PropState.PLACED
+	z_index = 10
+	# Stay at the wing edge (don't move)
+	if _nav_obstacle:
+		_nav_obstacle.avoidance_enabled = true
+	var stagehand := _scrim_stagehand
+	_scrim_stagehand = null
+	if stagehand:
+		stagehand.on_push_completed()
+	check_target_reached()
+
+
+func _draw_scrim() -> void:
+	var height: float = prop_size.y
+	var current_width: float
+	var draw_x: float
+
+	if _scrim_pulling or _scrim_retracting:
+		current_width = _scrim_full_width * _scrim_progress
+		# Draw from the source edge (same geometry for pull and retract)
+		if _scrim_from_left:
+			draw_x = 0.0
+		else:
+			draw_x = -current_width
+	elif current_state == PropState.PLACED or current_state == PropState.IN_POSITION:
+		# Fully extended from wing edge
+		current_width = _scrim_full_width
+		if _scrim_from_left:
+			draw_x = 0.0
+		else:
+			draw_x = -current_width
+	else:
+		# Stored: draw as a small folded rectangle at spawn position
+		current_width = prop_size.x
+		draw_x = -current_width / 2.0
+
+	var rect := Rect2(draw_x, -height / 2.0, current_width, height)
+	draw_rect(rect, prop_color)
+	draw_rect(rect, prop_color.darkened(0.3), false, 2.0)
+
+	# Subtle vertical line pattern for texture
+	if current_width > 50.0:
+		var line_color := prop_color.lightened(0.1)
+		line_color.a = 0.3
+		var spacing := 40.0
+		var x := draw_x + spacing
+		while x < draw_x + current_width - 5.0:
+			draw_line(Vector2(x, -height / 2.0), Vector2(x, height / 2.0), line_color, 1.0)
+			x += spacing
+
+	# Assignment indicators
+	var all_assigned := assigned_stagehands
+	if all_assigned.size() > 0:
+		var base_radius: float = height / 2.0 + 4.0
+		for i in range(all_assigned.size()):
+			var sh: CharacterBody2D = all_assigned[i]
+			draw_arc(Vector2.ZERO, base_radius + i * 3.0, 0, TAU, 32, sh.stagehand_color, 2.0)
+
+
+# =============================================================================
 # MOVEMENT PLAN — leg-based planning
 # =============================================================================
 
@@ -485,9 +629,21 @@ func clear_plan() -> void:
 func reset_for_planning() -> void:
 	clear_plan()
 	_show_ghost = false
+	if is_scrim():
+		# Preserve visual state: scrims stay stretched or retracted after execution
+		_scrim_pulling = false
+		_scrim_retracting = false
+		_scrim_stagehand = null
+		carriers.clear()
+		queue_redraw()
+		return
 	current_state = PropState.STORED
 	carriers.clear()
 	_push_stagehand = null
+	_scrim_pulling = false
+	_scrim_progress = 0.0
+	_scrim_stagehand = null
+	z_index = 0
 	queue_redraw()
 
 
