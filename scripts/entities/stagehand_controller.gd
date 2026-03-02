@@ -24,6 +24,8 @@ var path_index: int = 0
 var carried_props: Array[Node2D] = []
 var pushed_prop: Node2D = null
 var is_selected: bool = false
+var is_frozen: bool = false   # True while score panel is visible — suspends movement
+var is_spotted: bool = false  # True if caught on stage when lights came up
 
 # Home position: where this stagehand returns after tasks. Set at spawn.
 var home_position: Vector2 = Vector2.ZERO
@@ -72,8 +74,14 @@ func _draw() -> void:
 	if is_selected:
 		draw_arc(Vector2.ZERO, stagehand_radius + 5.0, 0, TAU, 32, Color.YELLOW, 3.0)
 
+	# Spotted indicator — red outer ring when caught on stage at lights-up
+	if is_spotted:
+		draw_arc(Vector2.ZERO, stagehand_radius + 9.0, 0, TAU, 32, Color.RED, 3.0)
+
 
 func _physics_process(delta: float) -> void:
+	if is_frozen:
+		return
 	match current_state:
 		State.MOVING, State.CARRYING:
 			_process_movement(delta)
@@ -359,6 +367,9 @@ func reset_for_planning() -> void:
 	pushed_prop = null
 	current_state = State.IDLE
 	_return_override = null
+	is_frozen = false
+	is_spotted = false
+	queue_redraw()
 
 
 func set_selected(value: bool) -> void:
