@@ -61,6 +61,12 @@ const STAGE_RIGHT_RECT := Rect2(650, -500, 250, 600)
 # World bounds: entire walkable area for drag clamping (includes apron)
 const WORLD_BOUNDS := Rect2(-900, -700, 1800, 800)
 
+# Blackout timing
+const BLACKOUT_DURATION := 15.0
+var _blackout_elapsed: float = 0.0
+var _execution_started_props: Array[StaticBody2D] = []
+var _score_showing: bool = false
+
 # Phase state
 var _is_planning: bool = true
 
@@ -93,7 +99,8 @@ func _ready() -> void:
 	var stage_bounds := WORLD_BOUNDS
 	camera.fit_to_stage(stage_bounds, 260.0)  # 250px panel + 10px gap
 
-	# Connect HUD
+	# Connect HUD signals
+	planning_hud.score_dismissed.connect(_resume_from_score)
 	# Start in planning phase
 	GameManager.change_state(GameManager.GameState.PLAYING)
 	GameManager.change_phase(GameManager.Phase.PLANNING)
@@ -108,6 +115,16 @@ func _ready() -> void:
 	else:
 		_spawn_test_entities()
 	_update_hud()
+
+
+func _process(delta: float) -> void:
+	if not _is_planning and not _execution_paused and not _score_showing:
+		if _blackout_elapsed < BLACKOUT_DURATION:
+			_blackout_elapsed += delta
+			var remaining := maxf(0.0, BLACKOUT_DURATION - _blackout_elapsed)
+			planning_hud.show_countdown(remaining)
+			if _blackout_elapsed >= BLACKOUT_DURATION:
+				_on_blackout_expired()
 
 
 func _spawn_test_entities() -> void:
@@ -470,11 +487,16 @@ func _start_execution() -> void:
 	_prop_execution.clear()
 	_props_waiting_for_stagehand.clear()
 	_execution_ending = false
+	_blackout_elapsed = 0.0
+	_score_showing = false
+	_execution_started_props.clear()
+	planning_hud.hide_score()
 
 	for prop in props:
 		if prop.has_plan():
 			prop.current_leg_index = 0
 			_active_props.append(prop)
+			_execution_started_props.append(prop)
 			_start_leg(prop)
 
 
@@ -549,6 +571,7 @@ func _resume_execution() -> void:
 func _end_execution() -> void:
 	_is_planning = true
 	_execution_paused = false
+	_score_showing = false
 	GameManager.change_phase(GameManager.Phase.PLANNING)
 	planning_hud.set_phase("PLANNING")
 
@@ -569,6 +592,97 @@ func _end_execution() -> void:
 	_deselect_all()
 	path_preview.set_execution_mode(false)
 	_update_hud()
+
+
+# =============================================================================
+# SCORING
+# =============================================================================
+
+func _on_blackout_expired() -> void:
+	_finish_blackout()
+
+
+func _finish_blackout() -> void:
+	## Snapshot score, freeze movement, highlight spotted stagehands, show panel.
+	## Execution ends only after the player dismisses the score panel and all
+	## stagehands have returned to the wings.
+	if _is_planning or _score_showing:
+		return
+	_score_showing = true
+
+	# Freeze all stagehands and highlight those still visible to the audience
+	for sh in stagehands:
+		sh.is_frozen = true
+		if _compute_stagehand_visibility(sh.global_position) >= 0.05:
+			sh.is_spotted = true
+		sh.queue_redraw()
+
+	# Freeze props that are mid-push (wheeled/scrim)
+	for prop in props:
+		if prop.current_state == prop.PropState.BEING_PUSHED:
+			prop._push_paused = true
+
+	var score := _compute_blackout_score()
+	planning_hud.show_score(score)
+
+
+func _resume_from_score() -> void:
+	## Called when the score panel is dismissed. Unfreeze and let stagehands
+	## finish routing to the wings; end execution once they're all idle.
+	for sh in stagehands:
+		sh.is_frozen = false
+		sh.is_spotted = false
+		sh.queue_redraw()
+	for prop in props:
+		prop._push_paused = false
+
+	# Ensure the all-idle check will fire once everyone settles
+	_execution_ending = true
+
+	# If stagehands are already idle (all reached wings before timer), end now
+	var all_idle := true
+	for sh in stagehands:
+		if sh.current_state in [StagehandController.State.MOVING, StagehandController.State.CARRYING, StagehandController.State.PUSHING]:
+			all_idle = false
+			break
+	if all_idle:
+		_end_execution()
+
+
+func _compute_blackout_score() -> Dictionary:
+	var props_placed := 0
+	for prop in _execution_started_props:
+		if prop.current_state == prop.PropState.IN_POSITION:
+			props_placed += 1
+
+	var stagehand_data: Array = []
+	for sh in stagehands:
+		stagehand_data.append({
+			"name": sh.stagehand_name,
+			"penalty": _compute_stagehand_visibility(sh.global_position),
+		})
+
+	return {
+		"props_placed": props_placed,
+		"props_total": _execution_started_props.size(),
+		"elapsed": _blackout_elapsed,
+		"stagehand_data": stagehand_data,
+	}
+
+
+func _compute_stagehand_visibility(pos: Vector2) -> float:
+	## Returns 0.0 (safe in wings) to 1.0 (center stage / apron).
+	## Scales linearly with distance to the nearest wing entrance.
+	if STAGE_LEFT_RECT.has_point(pos) or STAGE_RIGHT_RECT.has_point(pos):
+		return 0.0
+	if is_on_apron(pos):
+		return 1.0
+	if STAGE_RECT.has_point(pos):
+		var dist_left := pos.x - STAGE_RECT.position.x    # 0 at left wing edge
+		var dist_right := STAGE_RECT.end.x - pos.x        # 0 at right wing edge
+		var half_width := STAGE_RECT.size.x / 2.0         # 650
+		return minf(dist_left, dist_right) / half_width
+	return 0.0
 
 
 # =============================================================================
@@ -626,14 +740,17 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 	if not prop:
 		# Check if any props were waiting for this stagehand to become free
 		if not _try_dispatch_waiting_prop(stagehand) and _execution_ending:
-			# Check if all stagehands are idle — if so, end execution
+			# Check if all stagehands are idle — if so, end or score
 			var all_idle: bool = true
 			for sh in stagehands:
 				if sh.current_state in [StagehandController.State.MOVING, StagehandController.State.CARRYING, StagehandController.State.PUSHING]:
 					all_idle = false
 					break
 			if all_idle:
-				_end_execution()
+				if _score_showing:
+					_end_execution()  # Post-score: stagehands finished returning
+				else:
+					_finish_blackout()  # All done before timer — show score now
 		return
 
 	var exec: Dictionary = _prop_execution[prop]
