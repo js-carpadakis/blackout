@@ -344,6 +344,7 @@ func _planning_handle_drag(world_pos: Vector2) -> void:
 		var drag_vec: Vector2 = world_pos - _launch_drag_stagehand.global_position
 		_launch_drag_stagehand.launch_vector = Vector2.ZERO if drag_vec.length() < 10.0 else (-drag_vec).limit_length(500.0)
 		_launch_drag_stagehand.queue_redraw()
+		path_preview.invalidate(true)
 		return
 
 	# Dragging a target ghost — constrain to walkable area (stage, wings, apron)
