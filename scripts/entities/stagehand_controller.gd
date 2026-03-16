@@ -6,9 +6,9 @@ signal reached_destination
 signal task_completed
 signal selected(stagehand: CharacterBody2D)
 
-enum State { IDLE, MOVING, PICKING_UP, CARRYING, PUTTING_DOWN, WAITING, PUSHING }
+enum State { IDLE, MOVING, PICKING_UP, CARRYING, PUTTING_DOWN, WAITING, PUSHING, LAUNCHING }
 
-@export var movement_speed: float = 300.0
+@export var movement_speed: float = 200.0
 @export var rotation_speed: float = 10.0
 @export var acceleration: float = 1200.0   # Units/sec^2 when speeding up
 @export var deceleration: float = 800.0    # Units/sec^2 when slowing down
@@ -40,6 +40,19 @@ var _pathfinding: Node  # Reference to PathfindingManager
 var _target_position: Vector2
 var _facing_angle: float = 0.0  # Radians, 0 = right, PI/2 = down
 var speed_override: float = 0.0  # When > 0, overrides normal speed (for cooperative carries)
+
+# Launch system — set during planning, consumed by move_to() at execution start
+const LAUNCH_SPEED: float = 600.0
+const LAUNCH_BRAKE_DECEL: float = 2400.0    # Hard braking deceleration after burst distance ends
+const LAUNCH_BRAKE_EXIT_MIN: float = 50.0   # Exit speed for maximum direction correction (near-stop)
+const LAUNCH_BLEND_DURATION: float = 0.35   # Seconds to curve from launch dir into pathfinding
+var launch_vector: Vector2 = Vector2.ZERO       # Planning data: direction+distance, drawn as arrow
+var _launch_direction: Vector2 = Vector2.ZERO
+var _launch_remaining_dist: float = 0.0
+var _post_launch_target: Vector2 = Vector2.ZERO
+var _launch_braking: bool = false           # True during skid-to-stop after burst distance covered
+var _launch_brake_exit_speed: float = 0.0   # Computed from angle difference; higher = less skid
+var _launch_blend_factor: float = 0.0  # 1.0 = full launch dir, 0.0 = full path dir
 
 
 func _ready() -> void:
@@ -78,6 +91,16 @@ func _draw() -> void:
 	if is_spotted:
 		draw_arc(Vector2.ZERO, stagehand_radius + 9.0, 0, TAU, 32, Color.RED, 3.0)
 
+	# Launch arrow — shows burst direction and distance during planning
+	if launch_vector != Vector2.ZERO:
+		var arrow_color := Color.ORANGE
+		draw_line(Vector2.ZERO, launch_vector, arrow_color, 2.5)
+		var arrow_dir := launch_vector.normalized()
+		var arrow_perp := Vector2(-arrow_dir.y, arrow_dir.x)
+		var arrow_tip := launch_vector
+		var arrow_base := launch_vector - arrow_dir * 12.0
+		draw_colored_polygon(PackedVector2Array([arrow_tip, arrow_base + arrow_perp * 6.0, arrow_base - arrow_perp * 6.0]), arrow_color)
+
 
 func _physics_process(delta: float) -> void:
 	if is_frozen:
@@ -85,6 +108,8 @@ func _physics_process(delta: float) -> void:
 	match current_state:
 		State.MOVING, State.CARRYING:
 			_process_movement(delta)
+		State.LAUNCHING:
+			_process_launch(delta)
 		State.PUSHING:
 			pass  # Prop drives position during push
 		State.IDLE, State.WAITING:
@@ -115,8 +140,14 @@ func _process_movement(delta: float) -> void:
 			path_index += 1
 		return
 
+	# Blend move direction from launch direction into path direction after a burst
+	var move_dir: Vector2 = direction.normalized()
+	if _launch_blend_factor > 0.0:
+		move_dir = _launch_direction.lerp(move_dir, 1.0 - _launch_blend_factor).normalized()
+		_launch_blend_factor = max(0.0, _launch_blend_factor - delta / LAUNCH_BLEND_DURATION)
+
 	# Rotate to face movement direction
-	var target_angle: float = direction.angle()
+	var target_angle: float = move_dir.angle()
 	_facing_angle = lerp_angle(_facing_angle, target_angle, rotation_speed * delta)
 	queue_redraw()
 
@@ -145,7 +176,7 @@ func _process_movement(delta: float) -> void:
 	else:
 		_current_speed = max(_current_speed - deceleration * delta, target_speed)
 
-	velocity = direction.normalized() * _current_speed
+	velocity = move_dir * _current_speed
 	move_and_slide()
 
 
@@ -163,6 +194,43 @@ func _arrive_at_destination() -> void:
 	reached_destination.emit()
 
 
+func _process_launch(delta: float) -> void:
+	if is_frozen:
+		return
+
+	if _launch_braking:
+		# Skid to near-stop in the launch direction before pivoting to pathfinding
+		_current_speed = max(_launch_brake_exit_speed, _current_speed - LAUNCH_BRAKE_DECEL * delta)
+		velocity = _launch_direction * _current_speed
+		move_and_slide()
+		_facing_angle = _launch_direction.angle()
+		queue_redraw()
+		if _current_speed <= _launch_brake_exit_speed:
+			_launch_braking = false
+			_launch_blend_factor = 1.0  # begin curving into pathfinding direction from near-stop
+			move_to(_post_launch_target)
+			if carried_props.size() > 0:
+				current_state = State.CARRYING
+		return
+
+	_launch_remaining_dist -= LAUNCH_SPEED * delta
+	velocity = _launch_direction * LAUNCH_SPEED
+	move_and_slide()
+	_facing_angle = _launch_direction.angle()
+	queue_redraw()
+
+	if _launch_remaining_dist <= 0.0:
+		_launch_remaining_dist = 0.0
+		# Scale exit speed by how much direction correction is needed:
+		# dot=1 (same dir) → exit near LAUNCH_SPEED (tiny skid), dot=-1 (opposite) → exit at LAUNCH_BRAKE_EXIT_MIN (near stop)
+		var to_target: Vector2 = _post_launch_target - global_position
+		var target_dir: Vector2 = to_target.normalized() if to_target.length_squared() > 1.0 else _launch_direction
+		var angle_factor: float = (1.0 - _launch_direction.dot(target_dir)) * 0.5  # 0.0 to 1.0
+		_launch_brake_exit_speed = lerpf(LAUNCH_SPEED, LAUNCH_BRAKE_EXIT_MIN, angle_factor)
+		_current_speed = LAUNCH_SPEED
+		_launch_braking = true
+
+
 func set_pathfinding(pathfinding_node: Node) -> void:
 	_pathfinding = pathfinding_node
 
@@ -170,6 +238,17 @@ func set_pathfinding(pathfinding_node: Node) -> void:
 func move_to(target_world_pos: Vector2) -> void:
 	if not _pathfinding:
 		push_error("Pathfinding not set for stagehand")
+		return
+
+	# Launch intercept: burst in launch direction before pathfinding
+	if launch_vector != Vector2.ZERO:
+		_launch_direction = launch_vector.normalized()
+		_launch_remaining_dist = launch_vector.length()
+		_post_launch_target = target_world_pos
+		launch_vector = Vector2.ZERO  # consume — clears arrow via queue_redraw
+		_current_speed = 0.0
+		current_state = State.LAUNCHING
+		queue_redraw()
 		return
 
 	current_path = _pathfinding.find_path(global_position, target_world_pos)
@@ -369,6 +448,12 @@ func reset_for_planning() -> void:
 	_return_override = null
 	is_frozen = false
 	is_spotted = false
+	launch_vector = Vector2.ZERO
+	_launch_remaining_dist = 0.0
+	_launch_direction = Vector2.ZERO
+	_launch_braking = false
+	_launch_brake_exit_speed = 0.0
+	_launch_blend_factor = 0.0
 	queue_redraw()
 
 

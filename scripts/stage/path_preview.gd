@@ -100,6 +100,8 @@ func _recompute() -> void:
 	_last_stagehand_pos = sh_pos
 	_last_prop_positions.clear()
 
+	var launch_vec: Vector2 = _selected_stagehand.launch_vector
+
 	for prop in _selected_stagehand.assigned_props:
 		var prop_pos: Vector2 = prop.global_position
 		_last_prop_positions[prop] = prop_pos
@@ -116,8 +118,21 @@ func _recompute() -> void:
 				if prev_leg.has("destination"):
 					pickup_pos = prev_leg.destination
 
-			# Pickup path: stagehand -> prop
-			var pickup_path: PackedVector2Array = _pathfinding.find_path(sh_pos, pickup_pos)
+			# For leg 0 with a launch vector, prepend the burst line and offset the path start
+			var path_start: Vector2 = sh_pos
+			if leg_idx == 0 and launch_vec != Vector2.ZERO:
+				var burst_end: Vector2 = sh_pos + launch_vec
+				_cached_paths.append({
+					"points": PackedVector2Array([sh_pos, burst_end]),
+					"color": Color(1.0, 0.55, 0.0, 0.85),
+					"width": PICKUP_LINE_WIDTH + 0.5,
+					"dashed": false,
+					"end_marker": "",
+				})
+				path_start = burst_end
+
+			# Pickup path: path_start -> prop
+			var pickup_path: PackedVector2Array = _pathfinding.find_path(path_start, pickup_pos)
 			if pickup_path.size() > 0:
 				var pickup_color := Color(prop.prop_color.r, prop.prop_color.g, prop.prop_color.b, PICKUP_ALPHA)
 				_cached_paths.append({

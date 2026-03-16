@@ -74,6 +74,7 @@ var _is_planning: bool = true
 var _dragging_entity: Node2D = null
 var _dragging_target_prop: StaticBody2D = null  # When dragging a target ghost
 var _drag_offset: Vector2 = Vector2.ZERO
+var _launch_drag_stagehand: CharacterBody2D = null  # Stagehand whose launch vector is being drawn
 
 # Execution tracking — prop-driven
 enum LegPhase { DISPATCHING, GATHERING, CARRYING, DONE }
@@ -289,7 +290,7 @@ func _planning_input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
 			_rotate_hovered_ghost(get_global_mouse_position(), deg_to_rad(-15))
 
-	elif event is InputEventMouseMotion and (_dragging_entity or _dragging_target_prop):
+	elif event is InputEventMouseMotion and (_dragging_entity or _dragging_target_prop or _launch_drag_stagehand):
 		_planning_handle_drag(get_global_mouse_position())
 
 
@@ -304,12 +305,11 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 				_drag_offset = prop.target_position - world_pos
 				return
 
-	# Check if clicked on stagehand — select and start drag
+	# Check if clicked on stagehand — select and begin launch-vector drag
 	for stagehand in stagehands:
 		if world_pos.distance_to(stagehand.global_position) < stagehand.stagehand_radius + 5.0:
 			_select_stagehand(stagehand)
-			_dragging_entity = stagehand
-			_drag_offset = stagehand.global_position - world_pos
+			_launch_drag_stagehand = stagehand  # Left-drag sets launch vector; reposition is right-click
 			return
 
 	# Check if clicked on prop — select prop; scrims are selectable but not draggable
@@ -339,6 +339,14 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 
 
 func _planning_handle_drag(world_pos: Vector2) -> void:
+	# Launch vector drag — slingshot: drag opposite to burst direction
+	if _launch_drag_stagehand:
+		var drag_vec: Vector2 = world_pos - _launch_drag_stagehand.global_position
+		_launch_drag_stagehand.launch_vector = Vector2.ZERO if drag_vec.length() < 10.0 else (-drag_vec).limit_length(500.0)
+		_launch_drag_stagehand.queue_redraw()
+		path_preview.invalidate(true)
+		return
+
 	# Dragging a target ghost — constrain to walkable area (stage, wings, apron)
 	if _dragging_target_prop:
 		var ghost_pos: Vector2 = world_pos + _drag_offset
@@ -374,6 +382,7 @@ func _planning_handle_release() -> void:
 	_dragging_entity = null
 	_dragging_target_prop = null
 	_drag_offset = Vector2.ZERO
+	_launch_drag_stagehand = null
 
 
 func _rotate_hovered_ghost(world_pos: Vector2, angle_delta: float) -> void:
@@ -508,11 +517,13 @@ func _pause_execution() -> void:
 	_deselect_all()
 	path_preview.set_execution_mode(false)
 
-	# Stop all stagehand movement (preserve CARRYING/PUSHING state)
+	# Stop all stagehand movement (preserve CARRYING/PUSHING state; freeze LAUNCHING in place)
 	for sh in stagehands:
 		sh.current_path = PackedVector2Array()
 		sh.velocity = Vector2.ZERO
-		if sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.WAITING:
+		if sh.current_state == StagehandController.State.LAUNCHING:
+			sh.is_frozen = true  # Suspend burst; remaining distance preserved for resume
+		elif sh.current_state == StagehandController.State.MOVING or sh.current_state == StagehandController.State.WAITING:
 			sh.current_state = StagehandController.State.IDLE
 
 	# Freeze pushed props
@@ -534,6 +545,11 @@ func _resume_execution() -> void:
 		if prop.current_state == prop.PropState.BEING_PUSHED:
 			prop._push_paused = false
 
+	# Unfreeze any stagehands that were mid-launch when paused
+	for sh in stagehands:
+		if sh.is_frozen and sh.current_state == StagehandController.State.LAUNCHING:
+			sh.is_frozen = false
+
 	# Re-route stagehands to (possibly updated) destinations
 	for prop in _active_props:
 		if not _prop_execution.has(prop):
@@ -549,9 +565,16 @@ func _resume_execution() -> void:
 				for sh in exec.dispatched:
 					sh.move_to(leg.destination)
 		elif exec.phase == LegPhase.DISPATCHING:
-			# Re-attempt start_leg (handles stagehands that may have been reassigned)
-			_prop_execution.erase(prop)
-			_start_leg(prop)
+			# Skip re-routing if any dispatched stagehand is still mid-launch
+			var any_launching := false
+			for sh in exec.dispatched:
+				if sh.current_state == StagehandController.State.LAUNCHING:
+					any_launching = true
+					break
+			if not any_launching:
+				# Re-attempt start_leg (handles stagehands that may have been reassigned)
+				_prop_execution.erase(prop)
+				_start_leg(prop)
 
 	# Start any props that have remaining legs but aren't currently active
 	for prop in props:
@@ -642,7 +665,7 @@ func _resume_from_score() -> void:
 	# If stagehands are already idle (all reached wings before timer), end now
 	var all_idle := true
 	for sh in stagehands:
-		if sh.current_state in [StagehandController.State.MOVING, StagehandController.State.CARRYING, StagehandController.State.PUSHING]:
+		if sh.current_state in [StagehandController.State.MOVING, StagehandController.State.CARRYING, StagehandController.State.PUSHING, StagehandController.State.LAUNCHING]:
 			all_idle = false
 			break
 	if all_idle:
@@ -697,6 +720,8 @@ func _is_stagehand_busy(sh: CharacterBody2D) -> bool:
 		return true
 	if sh.current_state == StagehandController.State.PUSHING:
 		return true
+	if sh.current_state == StagehandController.State.LAUNCHING:
+		return true
 	if sh.carried_props.size() > 0:
 		return true
 	return false
@@ -724,11 +749,23 @@ func _start_leg(prop: StaticBody2D) -> void:
 				_props_waiting_for_stagehand[sh].append(prop)
 
 	if all_free:
-		# Send all stagehands to pick-up position
-		var pickup_pos: Vector2 = prop.get_pickup_position()
 		_prop_execution[prop].dispatched = leg_stagehands.duplicate()
-		for sh in leg_stagehands:
-			sh.move_to(pickup_pos)
+		var prop_in_wings := STAGE_LEFT_RECT.has_point(prop.global_position) or STAGE_RIGHT_RECT.has_point(prop.global_position)
+		if prop_in_wings and not leg_stagehands.is_empty():
+			# Prop is in the wings: skip dispatch, begin carrying/pushing immediately
+			# Teleport prop to lead stagehand so they start together
+			prop.global_position = leg_stagehands[0].global_position
+			# Push mechanics don't support launch — clear vectors for those stagehands
+			if prop.is_wheeled() or prop.is_scrim():
+				for sh in leg_stagehands:
+					sh.launch_vector = Vector2.ZERO
+					sh.queue_redraw()
+			_do_pickup(prop)
+		else:
+			# Normal dispatch: send stagehands to pick-up position
+			var pickup_pos: Vector2 = prop.get_pickup_position()
+			for sh in leg_stagehands:
+				sh.move_to(pickup_pos)
 
 
 func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
@@ -743,7 +780,7 @@ func _on_stagehand_arrived(stagehand: CharacterBody2D) -> void:
 			# Check if all stagehands are idle — if so, end or score
 			var all_idle: bool = true
 			for sh in stagehands:
-				if sh.current_state in [StagehandController.State.MOVING, StagehandController.State.CARRYING, StagehandController.State.PUSHING]:
+				if sh.current_state in [StagehandController.State.MOVING, StagehandController.State.CARRYING, StagehandController.State.PUSHING, StagehandController.State.LAUNCHING]:
 					all_idle = false
 					break
 			if all_idle:
