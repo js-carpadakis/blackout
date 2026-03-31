@@ -4,7 +4,15 @@ extends CanvasLayer
 signal score_dismissed
 
 @onready var phase_label: Label = $PhaseLabel
-@onready var task_list: VBoxContainer = $TaskPanel/TaskList
+@onready var task_list: VBoxContainer = $TaskPanel/TaskContainer/TaskScroll/TaskList
+@onready var _task_panel: PanelContainer = $TaskPanel
+@onready var _task_scroll: ScrollContainer = $TaskPanel/TaskContainer/TaskScroll
+@onready var _task_sep: HSeparator = $TaskPanel/TaskContainer/HSep
+@onready var _collapse_btn: Button = $TaskPanel/TaskContainer/CollapseButton
+
+const _EXPANDED_HEIGHT := 300.0
+const _COLLAPSED_HEIGHT := 36.0
+var _collapsed := false
 
 var _countdown_label: Label = null
 var _score_panel: Panel = null
@@ -15,6 +23,7 @@ func _ready() -> void:
 	set_phase("PLANNING")
 	_build_countdown_label()
 	_build_score_panel()
+	_collapse_btn.pressed.connect(_toggle_collapse)
 
 
 func _build_countdown_label() -> void:
@@ -39,6 +48,15 @@ func _build_score_panel() -> void:
 	_score_content = VBoxContainer.new()
 	_score_content.add_theme_constant_override("separation", 6)
 	margin.add_child(_score_content)
+
+
+func _toggle_collapse() -> void:
+	_collapsed = !_collapsed
+	_task_scroll.visible = !_collapsed
+	_task_sep.visible = !_collapsed
+	_collapse_btn.text = "▶  Tasks" if _collapsed else "▼  Tasks"
+	var new_bottom := _task_panel.offset_top + (_COLLAPSED_HEIGHT if _collapsed else _EXPANDED_HEIGHT)
+	_task_panel.offset_bottom = new_bottom
 
 
 func set_phase(phase_name: String) -> void:

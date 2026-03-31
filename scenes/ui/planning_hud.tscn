@@ -23,11 +23,28 @@ text = "PLANNING"
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -250.0
+offset_left = -210.0
 offset_top = 10.0
 offset_right = -10.0
-offset_bottom = 400.0
+offset_bottom = 310.0
 grow_horizontal = 0
 
-[node name="TaskList" type="VBoxContainer" parent="TaskPanel"]
+[node name="TaskContainer" type="VBoxContainer" parent="TaskPanel"]
 layout_mode = 2
+
+[node name="CollapseButton" type="Button" parent="TaskPanel/TaskContainer"]
+layout_mode = 2
+text = "▼  Tasks"
+flat = true
+alignment = 0
+
+[node name="HSep" type="HSeparator" parent="TaskPanel/TaskContainer"]
+layout_mode = 2
+
+[node name="TaskScroll" type="ScrollContainer" parent="TaskPanel/TaskContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="TaskList" type="VBoxContainer" parent="TaskPanel/TaskContainer/TaskScroll"]
+layout_mode = 2
+size_flags_horizontal = 3

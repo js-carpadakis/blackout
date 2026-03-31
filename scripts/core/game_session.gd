@@ -98,7 +98,7 @@ func _ready() -> void:
 
 	# Fit camera to show entire playable area, reserving space for HUD panel
 	var stage_bounds := WORLD_BOUNDS
-	camera.fit_to_stage(stage_bounds, 260.0)  # 250px panel + 10px gap
+	camera.fit_to_stage(stage_bounds)
 
 	# Connect HUD signals
 	planning_hud.score_dismissed.connect(_resume_from_score)

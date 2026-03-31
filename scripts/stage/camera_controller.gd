@@ -104,23 +104,19 @@ func fit_to_stage(stage_rect: Rect2, right_margin_px: float = 0.0) -> void:
 	## reserving right_margin_px screen pixels for HUD on the right.
 	var vp_size: Vector2 = get_viewport_rect().size  # e.g. 1152x648
 	var usable_width: float = vp_size.x - right_margin_px
-	var usable_height: float = vp_size.y
+	var _usable_height: float = vp_size.y
 
-	# Zoom so stage_rect fits in the usable area (with some padding)
-	var padding: float = 40.0  # world-unit margin around the stage
-	var world_w: float = stage_rect.size.x + padding * 2.0
-	var world_h: float = stage_rect.size.y + padding * 2.0
-
-	var zoom_x: float = usable_width / world_w
-	var zoom_y: float = usable_height / world_h
-	var fit_zoom: float = clamp(min(zoom_x, zoom_y), min_zoom, max_zoom)
+	# Zoom so the stage rect fills the usable width exactly (wing edges touch screen edges).
+	# Vertical fitting follows naturally from the aspect ratio.
+	var zoom_x: float = usable_width / stage_rect.size.x
+	var fit_zoom: float = clamp(zoom_x, min_zoom, max_zoom)
 	zoom = Vector2(fit_zoom, fit_zoom)
 
 	# Center of the stage rect in world space
 	var stage_center: Vector2 = stage_rect.get_center()
 
-	# The camera center maps to the viewport center. We want the stage
-	# centered in the *usable* area (left of the HUD), not the full viewport.
-	# Moving camera position RIGHT makes the stage appear LEFT on screen.
+	# Align stage rect bottom with screen bottom; center horizontally in usable area.
+	var stage_bottom: float = stage_rect.position.y + stage_rect.size.y
+	var half_vp_world_h: float = _usable_height / fit_zoom / 2.0
 	var margin_world: float = right_margin_px / fit_zoom
-	position = stage_center + Vector2(margin_world / 2.0, 0.0)
+	position = Vector2(stage_center.x + margin_world / 2.0, stage_bottom - half_vp_world_h)
