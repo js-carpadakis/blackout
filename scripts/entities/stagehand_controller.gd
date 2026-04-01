@@ -36,6 +36,8 @@ var assigned_props: Array[StaticBody2D] = []
 var has_assignment: bool:
 	get: return assigned_props.size() > 0
 
+var scrim_pull_destination: Vector2 = Vector2.ZERO  # Set by PropController during scrim pull
+
 var _pathfinding: Node  # Reference to PathfindingManager
 var _target_position: Vector2
 var _facing_angle: float = 0.0  # Radians, 0 = right, PI/2 = down
@@ -111,7 +113,9 @@ func _physics_process(delta: float) -> void:
 		State.LAUNCHING:
 			_process_launch(delta)
 		State.PUSHING:
-			pass  # Prop drives position during push
+			if pushed_prop != null and pushed_prop.is_scrim() and scrim_pull_destination != Vector2.ZERO:
+				_process_scrim_walk()
+			# else: prop drives position (wheeled push)
 		State.IDLE, State.WAITING:
 			pass
 
@@ -385,6 +389,33 @@ func _reposition_carried_props() -> void:
 # PUSH SUPPORT (wheeled props)
 # =============================================================================
 
+func _process_scrim_walk() -> void:
+	# Consume any pending launch vector as an initial speed boost
+	if launch_vector != Vector2.ZERO:
+		_launch_remaining_dist = launch_vector.length()
+		launch_vector = Vector2.ZERO
+		queue_redraw()
+
+	var to_dest := scrim_pull_destination - global_position
+	if to_dest.length() < 8.0:
+		velocity = Vector2.ZERO
+		scrim_pull_destination = Vector2.ZERO
+		_launch_remaining_dist = 0.0
+		return
+
+	var move_dir := to_dest.normalized()
+	_facing_angle = lerp_angle(_facing_angle, move_dir.angle(), rotation_speed * get_physics_process_delta_time())
+
+	var speed := movement_speed
+	if _launch_remaining_dist > 0.0:
+		speed = LAUNCH_SPEED
+		_launch_remaining_dist -= LAUNCH_SPEED * get_physics_process_delta_time()
+
+	velocity = move_dir * speed
+	move_and_slide()
+	queue_redraw()
+
+
 func start_pushing(prop: Node2D) -> void:
 	pushed_prop = prop
 	current_state = State.PUSHING
@@ -448,6 +479,7 @@ func reset_for_planning() -> void:
 	_return_override = null
 	is_frozen = false
 	is_spotted = false
+	scrim_pull_destination = Vector2.ZERO
 	launch_vector = Vector2.ZERO
 	_launch_remaining_dist = 0.0
 	_launch_direction = Vector2.ZERO

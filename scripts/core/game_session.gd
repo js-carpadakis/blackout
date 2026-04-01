@@ -314,15 +314,19 @@ func _planning_handle_click(world_pos: Vector2) -> void:
 
 	# Check if clicked on prop — select prop; scrims are selectable but not draggable
 	for prop in props:
-		var half_size: Vector2 = prop.prop_size / 2.0
-		var prop_rect: Rect2 = Rect2(prop.global_position - half_size, prop.prop_size)
-		if prop_rect.has_point(world_pos):
-			if not prop.is_scrim():
+		if prop.is_scrim():
+			if world_pos.distance_to(prop.get_lead_world_position()) < 20.0:
+				_select_prop(prop)
+				return
+		else:
+			var half_size: Vector2 = prop.prop_size / 2.0
+			var prop_rect: Rect2 = Rect2(prop.global_position - half_size, prop.prop_size)
+			if prop_rect.has_point(world_pos):
 				_dragging_entity = prop
 				prop.is_being_dragged = true
 				_drag_offset = prop.global_position - world_pos
-			_select_prop(prop)
-			return
+				_select_prop(prop)
+				return
 
 	# If a prop is selected and clicked on stage, set its target destination
 	if selected_prop and not selected_prop.is_scrim() and is_on_stage(world_pos):
@@ -412,9 +416,13 @@ func _planning_handle_right_click(world_pos: Vector2) -> void:
 
 	# Check if right-clicked on a prop — toggle stagehand assignment on the active leg
 	for prop in props:
-		var half_size: Vector2 = prop.prop_size / 2.0
-		var prop_rect: Rect2 = Rect2(prop.global_position - half_size, prop.prop_size)
-		if prop_rect.has_point(world_pos):
+		var hit: bool
+		if prop.is_scrim():
+			hit = world_pos.distance_to(prop.get_lead_world_position()) < 20.0
+		else:
+			var half_size: Vector2 = prop.prop_size / 2.0
+			hit = Rect2(prop.global_position - half_size, prop.prop_size).has_point(world_pos)
+		if hit:
 			_toggle_stagehand_on_prop(selected_stagehand, prop)
 			return
 
@@ -750,13 +758,14 @@ func _start_leg(prop: StaticBody2D) -> void:
 
 	if all_free:
 		_prop_execution[prop].dispatched = leg_stagehands.duplicate()
-		var prop_in_wings := STAGE_LEFT_RECT.has_point(prop.global_position) or STAGE_RIGHT_RECT.has_point(prop.global_position)
+		var prop_in_wings: bool = not prop.is_scrim() and (STAGE_LEFT_RECT.has_point(prop.global_position) or STAGE_RIGHT_RECT.has_point(prop.global_position))
 		if prop_in_wings and not leg_stagehands.is_empty():
 			# Prop is in the wings: skip dispatch, begin carrying/pushing immediately
 			# Teleport prop to lead stagehand so they start together
 			prop.global_position = leg_stagehands[0].global_position
-			# Push mechanics don't support launch — clear vectors for those stagehands
-			if prop.is_wheeled() or prop.is_scrim():
+			# Wheeled push mechanics don't support launch — clear vectors for those stagehands
+			# Scrims keep the launch vector so the stagehand gets a speed boost while pulling
+			if prop.is_wheeled():
 				for sh in leg_stagehands:
 					sh.launch_vector = Vector2.ZERO
 					sh.queue_redraw()

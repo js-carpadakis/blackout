@@ -39,10 +39,10 @@ var _scrim_pulling: bool = false
 var _scrim_retracting: bool = false  # true while retracting before a re-pull
 var _scrim_progress: float = 0.0  # 0.0 to 1.0
 var _scrim_from_left: bool = true  # true = extends from left wing edge
-var _scrim_pull_speed: float = 400.0  # pixels/sec of leading edge
 var _scrim_y: float = 0.0  # Y center of the scrim
 var _scrim_full_width: float = 1300.0  # full stage width
 var _scrim_stagehand: CharacterBody2D = null
+var _scrim_chain: Node2D = null  # ScrimChain instance (sibling node)
 
 var target_position: Vector2:
 	get:
@@ -96,7 +96,19 @@ func _ready() -> void:
 	if _nav_obstacle:
 		_nav_obstacle.radius = max(prop_size.x, prop_size.y) / 2.0 + 8.0
 
+	if is_scrim():
+		_scrim_chain = load("res://scripts/entities/scrim_chain.gd").new()
+		get_parent().add_child(_scrim_chain)
+		_scrim_chain.setup(_scrim_full_width, prop_color)
+		_scrim_chain.place_at_wing(global_position.x, global_position.y, _scrim_from_left)
+		tree_exiting.connect(_on_prop_tree_exiting)
+
 	queue_redraw()
+
+
+func _on_prop_tree_exiting() -> void:
+	if is_instance_valid(_scrim_chain):
+		_scrim_chain.queue_free()
 
 
 var is_being_dragged: bool = false
@@ -122,9 +134,23 @@ func _process(delta: float) -> void:
 					_process_push_final_rotate(delta)
 
 
+func get_lead_world_position() -> Vector2:
+	if _scrim_chain:
+		return _scrim_chain.get_lead_position()
+	return global_position
+
+
 func _draw() -> void:
 	if is_scrim():
-		_draw_scrim()
+		# Draw lead indicator so the player can see where to click
+		var lead_local: Vector2 = to_local(get_lead_world_position())
+		draw_circle(lead_local, 8.0, prop_color)
+		draw_arc(lead_local, 12.0, 0, TAU, 32, prop_color.lightened(0.4), 2.0)
+		# Assignment indicator rings around the lead
+		var scrim_assigned := assigned_stagehands
+		for i in range(scrim_assigned.size()):
+			var sh: CharacterBody2D = scrim_assigned[i]
+			draw_arc(lead_local, 16.0 + i * 4.0, 0, TAU, 32, sh.stagehand_color, 2.0)
 		return
 
 	# Draw target ghost at fixed world position with target rotation
@@ -430,27 +456,51 @@ func begin_scrim_pull(stagehand: CharacterBody2D, from_left: bool) -> void:
 		global_position.x = -650.0
 	else:
 		global_position.x = 650.0
-	# If already extended, retract first before pulling back out
+	# If already extended, stagehand walks from lead back to anchor to retract
 	if _scrim_progress > 0.0:
 		_scrim_retracting = true
 		_scrim_pulling = false
+		if _scrim_chain:
+			_scrim_chain.set_retracting(true)
+		var far_wing_x := 650.0 if _scrim_from_left else -650.0
+		var near_wing_x := -650.0 if _scrim_from_left else 650.0
+		stagehand.global_position = Vector2(far_wing_x, _scrim_y)
+		stagehand.scrim_pull_destination = Vector2(near_wing_x, _scrim_y)
 	else:
 		_scrim_retracting = false
 		_scrim_pulling = true
+		if _scrim_chain:
+			var wing_x := -650.0 if from_left else 650.0
+			_scrim_chain.place_at_wing(wing_x, _scrim_y, from_left)
+		stagehand.scrim_pull_destination = Vector2(650.0 if from_left else -650.0, _scrim_y)
 	queue_redraw()
 
 
-func _process_scrim_pull(delta: float) -> void:
-	_scrim_progress += (_scrim_pull_speed / _scrim_full_width) * delta
-	if _scrim_progress >= 1.0:
+func _process_scrim_pull(_delta: float) -> void:
+	if _scrim_stagehand == null:
+		return
+	var wing_x := -650.0 if _scrim_from_left else 650.0
+	var dir := 1.0 if _scrim_from_left else -1.0
+	_scrim_progress = clamp((_scrim_stagehand.global_position.x - wing_x) * dir / _scrim_full_width, 0.0, 1.0)
+	if _scrim_chain:
+		_scrim_chain.set_lead_position(_scrim_stagehand.global_position)
+	# Complete when stagehand is within 15px of the far wing
+	var far_wing_x := 650.0 if _scrim_from_left else -650.0
+	if abs(_scrim_stagehand.global_position.x - far_wing_x) < 15.0:
 		_scrim_progress = 1.0
 		_finish_scrim_pull()
 	queue_redraw()
 
 
-func _process_scrim_retract(delta: float) -> void:
-	_scrim_progress -= (_scrim_pull_speed / _scrim_full_width) * delta
-	if _scrim_progress <= 0.0:
+func _process_scrim_retract(_delta: float) -> void:
+	if _scrim_stagehand == null:
+		return
+	var wing_x := -650.0 if _scrim_from_left else 650.0
+	var dir := 1.0 if _scrim_from_left else -1.0
+	_scrim_progress = clamp((_scrim_stagehand.global_position.x - wing_x) * dir / _scrim_full_width, 0.0, 1.0)
+	if _scrim_chain:
+		_scrim_chain.set_lead_position(_scrim_stagehand.global_position)
+	if abs(_scrim_stagehand.global_position.x - wing_x) < 15.0:
 		_scrim_progress = 0.0
 		_scrim_retracting = false
 		_finish_scrim_retract()
@@ -458,6 +508,8 @@ func _process_scrim_retract(delta: float) -> void:
 
 
 func _finish_scrim_retract() -> void:
+	if _scrim_chain:
+		_scrim_chain.set_retracting(false)
 	current_state = PropState.STORED
 	z_index = 0
 	if _nav_obstacle:
@@ -472,61 +524,16 @@ func _finish_scrim_pull() -> void:
 	_scrim_pulling = false
 	current_state = PropState.PLACED
 	z_index = 10
-	# Stay at the wing edge (don't move)
 	if _nav_obstacle:
 		_nav_obstacle.avoidance_enabled = true
 	var stagehand := _scrim_stagehand
 	_scrim_stagehand = null
 	if stagehand:
+		# Keep stagehand at the far wing — override return position so they don't walk home
+		var far_wing_x := 650.0 if _scrim_from_left else -650.0
+		stagehand.set_return_override(Vector2(far_wing_x, _scrim_y))
 		stagehand.on_push_completed()
 	check_target_reached()
-
-
-func _draw_scrim() -> void:
-	var height: float = prop_size.y
-	var current_width: float
-	var draw_x: float
-
-	if _scrim_pulling or _scrim_retracting:
-		current_width = _scrim_full_width * _scrim_progress
-		# Draw from the source edge (same geometry for pull and retract)
-		if _scrim_from_left:
-			draw_x = 0.0
-		else:
-			draw_x = -current_width
-	elif current_state == PropState.PLACED or current_state == PropState.IN_POSITION:
-		# Fully extended from wing edge
-		current_width = _scrim_full_width
-		if _scrim_from_left:
-			draw_x = 0.0
-		else:
-			draw_x = -current_width
-	else:
-		# Stored: draw as a small folded rectangle at spawn position
-		current_width = prop_size.x
-		draw_x = -current_width / 2.0
-
-	var rect := Rect2(draw_x, -height / 2.0, current_width, height)
-	draw_rect(rect, prop_color)
-	draw_rect(rect, prop_color.darkened(0.3), false, 2.0)
-
-	# Subtle vertical line pattern for texture
-	if current_width > 50.0:
-		var line_color := prop_color.lightened(0.1)
-		line_color.a = 0.3
-		var spacing := 40.0
-		var x := draw_x + spacing
-		while x < draw_x + current_width - 5.0:
-			draw_line(Vector2(x, -height / 2.0), Vector2(x, height / 2.0), line_color, 1.0)
-			x += spacing
-
-	# Assignment indicators
-	var all_assigned := assigned_stagehands
-	if all_assigned.size() > 0:
-		var base_radius: float = height / 2.0 + 4.0
-		for i in range(all_assigned.size()):
-			var sh: CharacterBody2D = all_assigned[i]
-			draw_arc(Vector2.ZERO, base_radius + i * 3.0, 0, TAU, 32, sh.stagehand_color, 2.0)
 
 
 # =============================================================================
@@ -595,6 +602,8 @@ func advance_leg() -> void:
 
 
 func get_pickup_position() -> Vector2:
+	if is_scrim():
+		return get_lead_world_position()
 	if current_leg_index <= 0:
 		return global_position
 	# For subsequent legs, pickup is at the previous leg's destination
@@ -615,8 +624,9 @@ func get_all_assigned_stagehands() -> Array[CharacterBody2D]:
 
 func has_plan() -> bool:
 	for leg in movement_plan:
-		if leg.stagehands.size() > 0 and leg.has("destination"):
-			return true
+		if leg.stagehands.size() > 0:
+			if is_scrim() or leg.has("destination"):
+				return true
 	return false
 
 
